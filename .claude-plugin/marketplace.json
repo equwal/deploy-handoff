@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "deploy-handoff",
+  "description": "deploy-handoff: the human makes the final deploy, billing, and pull request click",
+  "owner": {
+    "name": "equwal",
+    "url": "https://github.com/equwal"
+  },
+  "plugins": [
+    {
+      "name": "deploy-handoff",
+      "description": "Opens deploy, billing, sign-in, and pull request pages in your browser, and waits while you make the final click. Claude never makes it for you.",
+      "version": "0.1.0",
+      "author": {
+        "name": "equwal"
+      },
+      "source": "./",
+      "category": "deployment",
+      "homepage": "https://github.com/equwal/deploy-handoff"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "deploy-handoff",
+  "version": "0.1.0",
+  "description": "Opens deploy, billing, sign-in, and pull request pages in your browser, and waits while you make the final click. Claude never makes it for you.",
+  "author": {
+    "name": "equwal",
+    "url": "https://github.com/equwal"
+  },
+  "homepage": "https://github.com/equwal/deploy-handoff",
+  "repository": "https://github.com/equwal/deploy-handoff",
+  "license": "MIT",
+  "keywords": ["deploy", "billing", "human-in-the-loop", "pull-request", "browser", "stripe", "google-play", "f-droid"]
+}
