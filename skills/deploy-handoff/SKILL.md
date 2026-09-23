@@ -1,13 +1,13 @@
 ---
 name: deploy-handoff
 description: >-
-  Gives the last step of a deploy, billing, or sign-in task to the user. Drive
-  the browser as far as you can, then use this skill. It shows the user a
-  dialog that tells what to do: the final publish, pay, or submit click, a
-  sign-in, an OAuth consent, or the creation of an API key. Examples: Stripe
-  live mode, Google Play Console releases, F-Droid merge requests, hosting
-  consoles. Also use it to open every GitHub pull request, instead of gh pr
-  create or another pull request tool.
+  Gives the last step of a deploy, billing, or sign-in task to the user. Use it
+  before you drive the browser: its browser-driver agent does the browser steps
+  in the browser where the user is signed in. Then a dialog tells the user what
+  to do: the final publish, pay, or submit click, a sign-in, an OAuth consent,
+  or the creation of an API key. Examples: Stripe live mode, Google Play Console
+  releases, F-Droid merge requests, hosting consoles. Also use it to open every
+  GitHub pull request, instead of gh pr create or another pull request tool.
 ---
 
 # deploy-handoff
@@ -23,18 +23,53 @@ The script shows a small dialog on top of the browser. The dialog tells the user
 The user must do only the last step. Do all the other work first.
 
 1. Do the work that needs no browser. For example, push the branch or upload the build with an API.
-2. If you have browser tools, go to the page of the last step. Examples of browser tools are Claude in Chrome and a Playwright MCP server. Use the browser in which the user is signed in, if you can.
-3. Open the correct app, release, or settings page. Fill in the fields that do not contain secrets.
-4. Stop before the last step. Then run `handoff.py open --no-open` with the URL of the current page.
+2. Give the browser steps to the `browser-driver` agent of this plugin. The next section tells how.
+3. If you cannot use the agent, drive the browser yourself. Use the browser in which the user is signed in. Open the page of the last step. Fill in the fields that do not contain secrets. Stop before the last step.
+4. Run `handoff.py open --no-open` with the URL of the current page.
 
 If you have no browser tools, give `handoff.py` the URL of the deepest page that you know. Do not give the home page of the console.
 
 Never do these steps yourself. Give them to the user:
 
-- Type a password, a one-time code, an API key, or a card number.
-- Solve a CAPTCHA.
-- Accept terms or an OAuth consent screen.
-- Click the final button that publishes, pays, submits, merges, or deletes.
+- Type a password, a one-time code, an API key, a token, or a card number.
+- Sign in, or create an account.
+- Solve a CAPTCHA or another check that you are a human.
+- Accept terms, a consent screen, or an OAuth consent.
+- Create or show a secret, for example an API key or a webhook secret.
+- Change a security setting, a payment method, or the access of a person.
+- Click the final button that publishes, deploys, pays, buys, submits, merges, or deletes.
+
+### The browser-driver agent
+
+The agent does the browser steps in its own browser: a separate Brave or Chrome profile in its own window. Playwright MCP controls this browser through a local port, so the user can keep working. On Windows, the agent can also use Windows-MCP for a window of the operating system. The agent never does a human step.
+
+The user signs in to each console one time in this browser. The browser keeps the sign-in. When the agent finds a sign-in page, it gives the sign-in to the user as a human step.
+
+1. Start the browser. The command prints one JSON object with the status `started` or `running`:
+
+   ```bash
+   python3 SKILL_DIR/handoff.py browser
+   ```
+
+2. Tell the user in one sentence that the agent works in its own browser window. Ask the user not to close that window.
+3. In Claude Code, start the agent with the Agent tool and `subagent_type: "deploy-handoff:browser-driver"`. Give it this information:
+   - The title and the start URL.
+   - All the steps in order, with the human step last.
+   - The text for each field, and the absolute path of each file to upload. The files must be in the project folder.
+
+The agent ends its answer with one JSON object:
+
+| `status` | Meaning | What you do |
+|---|---|---|
+| `done` | The agent did all the steps. The task had no human step. | Check the result. Do not show the dialog. |
+| `ready` | The page of a human step is open. | Run `handoff.py open --no-open` with its `url`, `title`, and `steps`. |
+| `not_done` | The agent cannot continue. `note` gives the error. | Read the next paragraph. |
+
+If the answer has no JSON object, treat it as `not_done`.
+
+After `not_done`, read the note. If you can fix the cause, for example a wrong URL, fix it and start the agent again one time. If you cannot fix it, run `handoff.py open` without `--no-open`, with all the steps for the user. Tell the user the error in one sentence.
+
+The `note` of a `ready` answer can name steps that remain after the human step. If the user answers `done` in the dialog, start the agent again for those steps.
 
 ## 2. Write the steps in Simplified Technical English
 

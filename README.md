@@ -4,7 +4,7 @@ A Claude Code plugin for the steps that an AI agent must not do alone.
 
 An agent can build, test, and upload a release. Some steps must come from a person: publish the release, turn on live payments, accept an OAuth consent, or create a pull request. The agent drives the browser as far as it can. Then deploy-handoff shows a small dialog on top of the browser. The dialog tells you what to do, in short steps in [Simplified Technical English](https://asd-ste100.org). You do the final click. Then you click **Done** or **Not done**, and the agent continues.
 
-deploy-handoff never clicks for you. It never asks for a password or a key.
+deploy-handoff never makes the final click for you. It never asks for a password or a key.
 
 ## Install
 
@@ -19,10 +19,11 @@ Requirements:
 
 - Python 3.11 or later, with Tk. The python.org installers for Windows and macOS include Tk. On Debian and Ubuntu, install `python3-tk`.
 - `git` for the `pr` command. `gh` is optional. If `gh` is available, the `pr` command gives the URL of the new pull request.
+- For the browser driver: Brave or Chrome, and Node.js with `npx`. The plugin starts [Playwright MCP](https://github.com/microsoft/playwright-mcp) with `npx`.
 
 ## How it works
 
-The plugin adds the skill `deploy-handoff`. Claude uses the skill when a task reaches a human step, and when it opens a GitHub pull request. The skill runs `skills/deploy-handoff/handoff.py`. Other tools can run the script in the same way.
+The plugin adds the skill `deploy-handoff` and the agent `browser-driver`. Claude uses the skill when a task reaches a human step, and when it opens a GitHub pull request. The skill starts the agent for the browser steps, then runs `skills/deploy-handoff/handoff.py`. Other tools can run the script in the same way.
 
 Open a page and show the steps:
 
@@ -47,6 +48,28 @@ The script prints one JSON object, for example `{"status": "done", "note": ""}`.
 ## Browser
 
 The script opens pages in a new tab of your default browser. To use a different browser, set the `BROWSER` environment variable. The Python `webbrowser` module reads it.
+
+## Browser driver
+
+The agent [browser-driver](agents/browser-driver.md) does the browser steps before the dialog. It stops at the first human step. Then the dialog shows only that step.
+
+The agent works in its own browser, not in your browser. Start that browser with this command:
+
+```bash
+python3 skills/deploy-handoff/handoff.py browser
+```
+
+The command starts Brave, or Chrome if Brave is not installed. `--exe PATH` names a different Chromium browser. The browser uses its own profile in `~/.config/deploy-handoff/browser` and opens the remote debugging port 9333 on 127.0.0.1. If the browser runs already, the command only prints its status.
+
+[Playwright MCP](https://github.com/microsoft/playwright-mcp) controls this browser through the port. Thus the agent works when the window is behind other windows, and you can keep working. It also fills in file dialogs without the mouse. On Windows, the agent can use [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) for a window of the operating system, if you have it.
+
+Sign in to each console one time in this browser. The profile keeps the sign-in. When the agent finds a sign-in page, it gives the sign-in to you as a human step.
+
+Any program on your computer can control this browser through the port. Use the profile only for deploy consoles. Close the browser when you do not need it.
+
+The agent gets only the tools that look at the page and act on it. It gets no tool that runs code in the page or reads the network traffic, and no shell, file, registry, or clipboard tool. It can upload only files in the project folder.
+
+The agent never types a password, a code, a key, or a card number. It never signs in, solves a CAPTCHA, accepts terms, or makes the final click. If it cannot continue, it gives the status `not_done` and the error to the agent that started it.
 
 ## Allowed hosts
 

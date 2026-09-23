@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "browser": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.82",
+        "--cdp-endpoint",
+        "http://127.0.0.1:9333",
+        "--output-dir",
+        "${CLAUDE_PLUGIN_DATA}/playwright"
+      ]
+    }
+  }
+}

@@ -3,9 +3,11 @@
 The dialog tests show small windows for a short time.
 """
 
+import http.server
 import json
 import subprocess
 import tempfile
+import threading
 import tkinter as tk
 import unittest
 from contextlib import redirect_stdout
@@ -254,6 +256,54 @@ class OpenPageTest(unittest.TestCase):
             handoff.open_page("https://github.com/")
 
 
+class VersionHandler(http.server.BaseHTTPRequestHandler):
+    """Answer like the remote debugging port of a browser."""
+
+    def do_GET(self) -> None:
+        body = json.dumps({"Browser": "Chrome/140.0"}).encode()
+        self.send_response(200 if self.path == "/json/version" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Write no log lines during the tests."""
+
+
+class BrowserTest(unittest.TestCase):
+    def test_command_uses_its_own_profile_and_the_debug_port(self) -> None:
+        command = handoff.browser_command(Path("brave.exe"), Path("profile"), 9333)
+        self.assertEqual(command[0], "brave.exe")
+        self.assertIn(f"--user-data-dir={Path('profile')}", command)
+        self.assertIn("--remote-debugging-port=9333", command)
+
+    def test_find_browser_takes_the_first_file(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        missing, chrome = Path(folder.name, "brave.exe"), Path(folder.name, "chrome.exe")
+        chrome.write_bytes(b"")
+        self.assertEqual(handoff.find_browser([missing, chrome]), chrome)
+        with self.assertRaises(HandoffError):
+            handoff.find_browser([missing])
+
+    def test_debug_version_reads_the_browser_on_the_port(self) -> None:
+        server = http.server.HTTPServer(("127.0.0.1", 0), VersionHandler)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            self.assertEqual(handoff.debug_version(server.server_port), {"Browser": "Chrome/140.0"})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.assertIsNone(handoff.debug_version(server.server_port))
+
+    def test_mcp_json_uses_the_debug_port(self) -> None:
+        path = Path(__file__).resolve().parents[2] / ".mcp.json"
+        server = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["browser"]
+        self.assertIn(f"http://127.0.0.1:{handoff.DEBUG_PORT}", server["args"])
+
+
 class GithubRepoTest(unittest.TestCase):
     @given(OWNER, NAME, st.sampled_from(REMOTE_FORMS))
     def test_round_trip(self, owner: str, name: str, form: str) -> None:
@@ -447,6 +497,36 @@ class MainTest(unittest.TestCase):
             "https://github.com/o/r/compare/main?expand=1&title=Add%20X&body=Why"
         )
         find_open_pr.assert_called_once_with("o/r", "main")
+
+    def test_browser_that_runs(self) -> None:
+        self.patch("debug_version", mock.MagicMock(return_value={"Browser": "Chrome/140.0"}))
+        start = self.patch("start_browser", mock.MagicMock())
+        code, result = self.run_main("browser")
+        endpoint = f"http://127.0.0.1:{handoff.DEBUG_PORT}"
+        expected = {"status": "running", "browser": "Chrome/140.0", "endpoint": endpoint}
+        self.assertEqual((code, result), (0, expected))
+        start.assert_not_called()
+
+    def test_browser_starts(self) -> None:
+        self.patch("debug_version", mock.MagicMock(side_effect=[None, None, {"Browser": "C/1"}]))
+        profile = self.patch("BROWSER_PROFILE", self.root / "browser")
+        start = self.patch("start_browser", mock.MagicMock())
+        with mock.patch("time.sleep"):
+            code, result = self.run_main("browser", "--exe", "brave.exe")
+        self.assertEqual((code, result["status"]), (0, "started"))
+        command = handoff.browser_command(Path("brave.exe"), profile, handoff.DEBUG_PORT)
+        start.assert_called_once_with(command)
+        self.assertTrue(profile.is_dir())
+
+    def test_browser_that_does_not_open_the_port(self) -> None:
+        self.patch("debug_version", mock.MagicMock(return_value=None))
+        self.patch("BROWSER_PROFILE", self.root / "browser")
+        self.patch("BROWSER_START_SECONDS", 0)
+        self.patch("start_browser", mock.MagicMock())
+        with mock.patch("time.sleep"):
+            code, result = self.run_main("browser", "--exe", "brave.exe")
+        self.assertEqual((code, result["status"]), (1, "error"))
+        self.assertIn(f"port {handoff.DEBUG_PORT}", str(result["error"]))
 
     def test_pr_refuses_a_branch_that_is_not_pushed(self) -> None:
         work = make_repo(self.root)

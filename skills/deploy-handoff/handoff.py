@@ -6,19 +6,27 @@ the creation of a GitHub pull request. The script opens the page in the
 default browser and shows a small dialog with the steps. It never clicks for
 the user. It prints the answer of the user as one JSON object on stdout.
 
-Exit codes: 0 done, 1 error, 2 bad arguments, 3 not done, 4 timeout.
+The command "browser" starts a separate browser for the browser-driver agent of
+this plugin. Playwright MCP controls that browser through a local port.
+
+Exit codes: 0 done, started, or running, 1 error, 2 bad arguments, 3 not done,
+4 timeout.
 """
 
 import argparse
 import contextlib
 import ctypes
+import http.client
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 import tkinter as tk
 import tomllib
+import urllib.request
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -33,9 +41,17 @@ USER_CONFIG = (
     / "deploy-handoff"
     / "config.toml"
 )
+# The browser-driver agent uses a browser with its own profile. Playwright MCP controls it
+# through this remote debugging port. .mcp.json at the root of the plugin uses the same port.
+DEBUG_PORT = 9333
+BROWSER_PROFILE = USER_CONFIG.with_name("browser")
+# The time in seconds that a new browser gets to open DEBUG_PORT.
+BROWSER_START_SECONDS = 30
+# The browser listens on 127.0.0.1. A proxy must not get these requests.
+LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # GitHub refuses very long request lines. This limit keeps a margin.
 MAX_PR_URL_LENGTH = 8000
-EXIT_CODES = {"done": 0, "error": 1, "not_done": 3, "timeout": 4}
+EXIT_CODES = {"done": 0, "started": 0, "running": 0, "error": 1, "not_done": 3, "timeout": 4}
 # ASD-STE100 Simplified Technical English allows 20 words in one instruction.
 MAX_STEP_WORDS = 20
 PR_STEPS = (
@@ -144,6 +160,103 @@ def open_page(url: str) -> None:
     """Open url in a new tab of the default browser. BROWSER can name a different browser."""
     if not webbrowser.open(url, new=2):
         raise HandoffError("No browser opened the page. Set the BROWSER environment variable.")
+
+
+def browser_candidates() -> list[Path]:
+    """Return the usual paths of Brave and Chrome on this system. Brave comes first."""
+    if sys.platform == "win32":
+        roots = [
+            os.environ.get(name) for name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")
+        ]
+        programs = (
+            r"BraveSoftware\Brave-Browser\Application\brave.exe",
+            r"Google\Chrome\Application\chrome.exe",
+        )
+        return [Path(root, program) for program in programs for root in roots if root]
+    if sys.platform == "darwin":
+        return [
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ]
+    names = ("brave-browser", "brave", "google-chrome", "chromium", "chromium-browser")
+    return [Path(path) for name in names if (path := shutil.which(name))]
+
+
+def find_browser(candidates: Iterable[Path]) -> Path:
+    """Return the first candidate that is a file."""
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise HandoffError("Found no Brave or Chrome. Give --exe PATH.")
+
+
+def browser_command(exe: Path, profile: Path, port: int) -> list[str]:
+    """Return the command that starts the browser of the browser-driver agent."""
+    return [
+        str(exe),
+        f"--user-data-dir={profile}",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        # Keep the pages active when other windows cover the window of this browser.
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+    ]
+
+
+def debug_version(port: int) -> dict[str, object] | None:
+    """Return the version data of the browser that listens on port, or None if none answers."""
+    try:
+        with LOCAL_OPENER.open(f"http://127.0.0.1:{port}/json/version", timeout=2) as response:
+            data = json.load(response)
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def start_browser(command: list[str]) -> None:
+    """Start the browser in a new process group, so that it runs after this script ends."""
+    devnull = subprocess.DEVNULL
+    try:
+        if sys.platform == "win32":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen(
+                command, stdin=devnull, stdout=devnull, stderr=devnull, creationflags=flags
+            )
+        else:
+            subprocess.Popen(
+                command, stdin=devnull, stdout=devnull, stderr=devnull, start_new_session=True
+            )
+    except OSError as exc:
+        raise HandoffError(f"Cannot start {command[0]}: {exc}") from exc
+
+
+def wait_for_browser(port: int, seconds: float) -> dict[str, object]:
+    """Wait until a browser answers on port. Return its version data."""
+    deadline = time.monotonic() + seconds
+    while (version := debug_version(port)) is None:
+        if time.monotonic() > deadline:
+            raise HandoffError(
+                f"The browser did not open port {port} in {seconds:g} seconds. If the browser "
+                "of the agent runs without this port, close it. Then run this command again."
+            )
+        time.sleep(0.5)
+    return version
+
+
+def run_browser(exe: Path | None) -> dict[str, str | None]:
+    """Start the browser of the browser-driver agent, or find it running."""
+    status = "running"
+    version = debug_version(DEBUG_PORT)
+    if version is None:
+        status = "started"
+        BROWSER_PROFILE.mkdir(parents=True, exist_ok=True)
+        exe = exe or find_browser(browser_candidates())
+        start_browser(browser_command(exe, BROWSER_PROFILE, DEBUG_PORT))
+        version = wait_for_browser(DEBUG_PORT, BROWSER_START_SECONDS)
+    endpoint = f"http://127.0.0.1:{DEBUG_PORT}"
+    return {"status": status, "browser": str(version.get("Browser")), "endpoint": endpoint}
 
 
 def github_repo(remote_url: str) -> str:
@@ -333,6 +446,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     pr.add_argument("--repo", help="OWNER/NAME on GitHub (default: from the remote URL)")
     pr.add_argument("--remote", default="origin", help="the remote with the branch")
     pr.add_argument("--repo-dir", type=Path, default=Path(), help="the local repository")
+    browser = commands.add_parser("browser", help="start the browser of the browser-driver agent")
+    browser.add_argument("--exe", type=Path, help="the browser program (default: Brave or Chrome)")
     return parser.parse_args(argv)
 
 
@@ -346,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     """Do the handoff. Return the exit code."""
     args = parse_args(argv)
     try:
+        if args.command == "browser":
+            return report(run_browser(args.exe))
         hosts = allowed_hosts()
         if args.command == "pr":
             request = pr_request(args)
