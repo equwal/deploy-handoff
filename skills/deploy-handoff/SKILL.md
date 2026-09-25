@@ -18,6 +18,28 @@ Run the commands in a POSIX shell. On Windows, use Git Bash. Windows PowerShell 
 
 The script shows a small dialog on top of the browser. The dialog tells the user what to do. The user does the last step and clicks **Done** or **Not done**. The script never clicks for the user.
 
+## 0. Select the automation mode
+
+Before you do the work, select one of these modes:
+
+| Mode | Use it when |
+|---|---|
+| PowerShell command | A CLI or API does the step, for example `vercel deploy`, `gh release create`, or `stripe`. Run it with the PowerShell tool. |
+| Brave with the Claude extension | The `mcp__claude-in-chrome__*` tools are available and Brave has the sign-in of the user. |
+| Brave with Playwright | The `browser-driver` agent is available. It uses `handoff.py browser` and the Playwright MCP. |
+| Fresh browser (built-in browser) | The step needs no sign-in, or the user will sign in again. Use the `mcp__Claude_Browser__*` tools. |
+| Windows-MCP | The step is in a desktop app or an operating system dialog, not in a web page. |
+| Dialog with instructions only | No automation tool is available, or the user wants to do all the steps. Run `handoff.py open` without `--no-open`. |
+
+Guess the mode with these rules, in this order:
+
+1. If the user named a mode in this session, use it.
+2. If a command can do the step, use "PowerShell command".
+3. If the step is not in a web page, use "Windows-MCP".
+4. If only one browser mode has connected tools, use that mode.
+
+If the rules do not give one mode, ask the user one time with the AskUserQuestion tool. Put your best guess first and mark it "(Recommended)". Use that mode for the rest of the session. If a mode fails, go to the next mode in the table. Tell the user in one sentence which mode you use.
+
 ## 1. Drive the browser to the last step
 
 The user must do only the last step. Do all the other work first.
