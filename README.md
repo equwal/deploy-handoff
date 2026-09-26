@@ -65,7 +65,9 @@ The command starts Brave, or Chrome if Brave is not installed. `--exe PATH` name
 
 Sign in to each console one time in this browser. The profile keeps the sign-in. When the agent finds a sign-in page, it gives the sign-in to you as a human step.
 
-Any program on your computer can control this browser through the port. Use the profile only for deploy consoles. Close the browser when you do not need it.
+The browser starts with no window. The agent opens a window when it opens a page. If you close the window, the browser does not stop, and the agent can open a new window.
+
+Any program on your computer can control this browser through the port. Use the profile only for deploy consoles. When you do not need the browser, stop its process: the `brave.exe` or `chrome.exe` process with `--remote-debugging-port=9333` in its command line. On Windows, Task Manager shows the command line on the Details tab when you add the "Command line" column. On macOS and Linux, run `pkill -f -- --remote-debugging-port=9333`.
 
 The agent gets only the tools that look at the page and act on it. It gets no tool that runs code in the page or reads the network traffic, and no shell, file, registry, or clipboard tool. It can upload only files in the project folder.
 
@@ -94,7 +96,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s skills/deploy-handoff
 ```
 
-On Windows, use `.venv\Scripts\python`. `pip install --group` needs pip 25.1 or later. The dialog tests show small windows for a short time.
+On Windows, use `.venv\Scripts\python`. `pip install --group` needs pip 25.1 or later. The dialog tests show small windows for a short time. One browser test starts Brave or Chrome with a temporary profile. If you have neither, unittest skips that test.
 
 ## More projects
 

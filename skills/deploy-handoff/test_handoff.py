@@ -1,15 +1,18 @@
 """Tests for handoff.py. README.md tells how to run them.
 
-The dialog tests show small windows for a short time.
+The dialog tests show small windows for a short time. BrowserWindowTest starts Brave or
+Chrome with a temporary profile, and shows its window for a short time.
 """
 
 import http.server
 import json
+import socket
 import subprocess
 import tempfile
 import threading
 import tkinter as tk
 import unittest
+import urllib.request
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -302,6 +305,56 @@ class BrowserTest(unittest.TestCase):
         path = Path(__file__).resolve().parents[2] / ".mcp.json"
         server = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["browser"]
         self.assertIn(f"http://127.0.0.1:{handoff.DEBUG_PORT}", server["args"])
+
+
+def free_port() -> int:
+    """Return a port on 127.0.0.1 that no program uses now."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port: int = sock.getsockname()[1]
+    return port
+
+
+def devtools(port: int, path: str, method: str = "GET") -> str:
+    """Send one HTTP request to the remote debugging port of a browser. Return the body."""
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
+    with handoff.LOCAL_OPENER.open(request, timeout=10) as response:
+        body: bytes = response.read()
+    return body.decode()
+
+
+class BrowserWindowTest(unittest.TestCase):
+    def test_command_starts_without_a_window(self) -> None:
+        command = handoff.browser_command(Path("brave.exe"), Path("profile"), 9333)
+        self.assertIn("--no-startup-window", command)
+
+    def test_keeps_running_when_its_last_window_closes(self) -> None:
+        # On 2026-09-26 the browser stopped two times, because its window closed. Then the
+        # agent got "Failed to open a new tab" and "connect ECONNREFUSED 127.0.0.1:9333".
+        try:
+            exe = handoff.find_browser(handoff.browser_candidates())
+        except HandoffError:
+            self.skipTest("Found no Brave or Chrome.")
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        port = free_port()
+        browser = subprocess.Popen(
+            handoff.browser_command(exe, Path(folder.name), port),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(browser.wait, 30)
+        self.addCleanup(browser.kill)
+        handoff.wait_for_browser(port, handoff.BROWSER_START_SECONDS)
+        # The agent opens a page. Then the user closes each tab, as the close button does.
+        devtools(port, "/json/new?about:blank", "PUT")
+        for target in json.loads(devtools(port, "/json/list")):
+            if target["type"] == "page":
+                devtools(port, f"/json/close/{target['id']}")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            browser.wait(timeout=5)
+        self.assertIn("about:blank", devtools(port, "/json/new?about:blank", "PUT"))
 
 
 class GithubRepoTest(unittest.TestCase):

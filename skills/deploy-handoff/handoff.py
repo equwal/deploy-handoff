@@ -196,6 +196,10 @@ def browser_command(exe: Path, profile: Path, port: int) -> list[str]:
         str(exe),
         f"--user-data-dir={profile}",
         f"--remote-debugging-port={port}",
+        # Start with no window. With this flag and a remote debugging port, Chromium keeps
+        # running after its last window closes. Without it, the browser stops when a person or
+        # a program closes its window, and the agent cannot connect to the port.
+        "--no-startup-window",
         "--no-first-run",
         "--no-default-browser-check",
         # Keep the pages active when other windows cover the window of this browser.
