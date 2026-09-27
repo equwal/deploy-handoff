@@ -1,3 +1,42 @@
+## MANDATORY: The word DEPLOY runs the full pipeline at max verification
+
+When the user's message is, or contains, the standalone word "DEPLOY" (any
+case), treat it as one command: run the full pipeline below. Do not ask which
+part they mean. Try each step. When a step does not apply to this project,
+say so and move on. A step that does not apply is not a blocked step.
+
+1. **Verify at max rigor first.** Run the strictest check the project has:
+   formatter, linter, a strict type check, and the full test suite. Add a
+   regression test for each new behavior. Run each check as a real command
+   and show the output. A step with no command output is not done. If the
+   project has none of this tooling, say so instead of skipping silently.
+2. **Version.** Try to set a version number for the change. Use the scheme
+   the project already has: bump the version field in `package.json`,
+   `pyproject.toml`, `Cargo.toml`, or a similar manifest. If it has no such
+   file but already uses git tags for versions, add the next tag. If neither
+   exists, say so and skip.
+3. **Ship.** Commit the change with a self-contained message, keep secrets
+   out of the diff, and push.
+4. **Upstream.** Try to push the change upstream. Follow "Pull requests"
+   below: if the repo is a fork, or has an `upstream` remote, and the change
+   is useful to the upstream project, open that pull request.
+5. **Live deploy.** Try to put the change where it runs live. Do each of
+   these the project actually has:
+   - A deploy platform config (`vercel.json`, `netlify.toml`,
+     `wrangler.toml`, `fly.toml`, a GitHub Actions deploy workflow).
+   - A VPS the project deploys to: an SSH or rsync deploy script, an Ansible
+     playbook, or a Docker Compose file with a known host. Restart the
+     service after the copy.
+   - A local install or run step on this computer: a local package install,
+     a copy to a run folder, or a restart of a local daemon or service.
+   If the project has none of these, say so and skip.
+6. **Hand off what is left.** Give the user each step that needs a live key,
+   a production flag, a domain purchase, a sign-in, or another human action.
+   Use the `deploy-handoff` skill for each one.
+
+Report one line per part: done, blocked, or not applicable, with the cause
+for a blocked part.
+
 ## MANDATORY: Hand off human steps. Do not refuse the task.
 
 The `deploy-handoff` plugin is installed. Its skill shows the user a dialog with the last step of a task. The user makes the final click in the browser.
