@@ -170,6 +170,20 @@ After `pr`, a `done` answer also has `pr_url`. It is the open pull request that 
 - `timeout`: Ask the user before you try again.
 - `error`: Fix the cause. If the host is not allowed, ask the user.
 
+## More than one task
+
+A request can have more than one task, for example a web deploy, a store release, and a payment setup. A task is blocked when it gets to a human step, or to an error that you cannot fix. A blocked task does not stop the other tasks.
+
+1. Stop the blocked task, and each task that needs its result.
+2. If the blocked step has a web page, give it to the user with `handoff.py`. Run the command in the background.
+3. Continue the other tasks while the dialog is open. Each dialog runs in its own process, so more than one dialog can be open at the same time.
+4. After a `done` answer, check the result. Then continue the blocked task.
+5. Put each question for the user at the end, after the other tasks are done or blocked. A question ends your turn and stops the other tasks.
+
+At the end, give the result of each task. For a blocked task, give the cause and the step that the user must do.
+
+If the user tells you to stop, stop all the tasks.
+
 ## Safety
 
 - Never ask the user to type or paste a password, key, token, or card number into the chat or the note. Tell the user where to put a secret, for example in the secret store of the host.
