@@ -96,6 +96,18 @@ class BrowserDriverTest(unittest.TestCase):
         self.assertTrue(steps)
         self.assertEqual(steps, human_steps(self.skill))
 
+    def test_docs_start_the_fresh_browser_only_with_the_fresh_flag(self) -> None:
+        # The user wants the Brave profile of the user. A fresh profile only if the user asks.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("handoff.py browser --fresh", self.skill)
+        for name, text in [
+            ("SKILL.md", self.skill),
+            ("README.md", readme),
+            (AGENT.name, self.agent),
+        ]:
+            with self.subTest(name=name):
+                self.assertNotRegex(text, r"handoff\.py browser(?! --fresh)")
+
 
 if __name__ == "__main__":
     unittest.main()

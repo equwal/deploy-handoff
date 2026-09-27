@@ -2,12 +2,12 @@
 name: deploy-handoff
 description: >-
   Gives the last step of a deploy, billing, or sign-in task to the user. Use it
-  before you drive the browser: its browser-driver agent does the browser steps
-  in the browser where the user is signed in. Then a dialog tells the user what
-  to do: the final publish, pay, or submit click, a sign-in, an OAuth consent,
-  or the creation of an API key. Examples: Stripe live mode, Google Play Console
-  releases, F-Droid merge requests, hosting consoles. Also use it to open every
-  GitHub pull request, instead of gh pr create or another pull request tool.
+  before you drive the browser. Drive the Brave profile where the user is signed
+  in, never a fresh profile. Then a dialog tells the user what to do: the final
+  publish, pay, or submit click, a sign-in, an OAuth consent, or the creation of
+  an API key. Examples: Stripe live mode, Google Play Console releases, F-Droid
+  merge requests, hosting consoles. Also use it to open every GitHub pull
+  request, instead of gh pr create or another pull request tool.
 ---
 
 # deploy-handoff
@@ -20,34 +20,36 @@ The script shows a small dialog on top of the browser. The dialog tells the user
 
 ## 0. Select the automation mode
 
+The user is signed in to the deploy consoles in one Brave profile. The `brave_profile` key in the user config file names it. Always use that profile. Never use a fresh browser profile unless the user asks for it in this session. A fresh profile has no sign-in.
+
 Before you do the work, select one of these modes:
 
 | Mode | Use it when |
 |---|---|
 | PowerShell command | A CLI or API does the step, for example `vercel deploy`, `gh release create`, or `stripe`. Run it with the PowerShell tool. |
-| Brave with the Claude extension | The `mcp__claude-in-chrome__*` tools are available and Brave has the sign-in of the user. |
-| Brave with Playwright | The `browser-driver` agent is available. It uses `handoff.py browser` and the Playwright MCP. |
-| Fresh browser (built-in browser) | The step needs no sign-in, or the user will sign in again. Use the `mcp__Claude_Browser__*` tools. |
+| Brave with the Claude extension | The `mcp__claude-in-chrome__*` tools are available, and the extension runs in the Brave profile of the user. This is the default browser mode. |
 | Windows-MCP | The step is in a desktop app or an operating system dialog, not in a web page. |
-| Dialog with instructions only | No automation tool is available, or the user wants to do all the steps. Run `handoff.py open` without `--no-open`. |
+| Dialog with instructions only | No automation tool is available, or the user wants to do all the steps. Run `handoff.py open` without `--no-open`. The script opens the page in the Brave profile of the user. |
+| Fresh Brave profile with Playwright | Only if the user asks for it. The `browser-driver` agent uses `handoff.py browser --fresh` and the Playwright MCP. |
+| Fresh browser (built-in browser) | Only if the user asks for it. Use the `mcp__Claude_Browser__*` tools. |
 
 Guess the mode with these rules, in this order:
 
 1. If the user named a mode in this session, use it.
 2. If a command can do the step, use "PowerShell command".
 3. If the step is not in a web page, use "Windows-MCP".
-4. If only one browser mode has connected tools, use that mode.
+4. If the `mcp__claude-in-chrome__*` tools are available, use "Brave with the Claude extension".
+5. Otherwise, use "Dialog with instructions only".
 
-If the rules do not give one mode, ask the user one time with the AskUserQuestion tool. Put your best guess first and mark it "(Recommended)". Use that mode for the rest of the session. If a mode fails, go to the next mode in the table. Tell the user in one sentence which mode you use.
+If a mode fails, use "Dialog with instructions only". Do not go to a fresh browser unless the user asks for it. Tell the user in one sentence which mode you use.
 
 ## 1. Drive the browser to the last step
 
 The user must do only the last step. Do all the other work first.
 
 1. Do the work that needs no browser. For example, push the branch or upload the build with an API.
-2. Give the browser steps to the `browser-driver` agent of this plugin. The next section tells how.
-3. If you cannot use the agent, drive the browser yourself. Use the browser in which the user is signed in. Open the page of the last step. Fill in the fields that do not contain secrets. Stop before the last step.
-4. Run `handoff.py open --no-open` with the URL of the current page.
+2. Drive the browser yourself with the mode that section 0 selects. Use the Brave profile of the user. Open the page of the last step. Fill in the fields that do not contain secrets. Stop before the last step.
+3. Run `handoff.py open --no-open` with the URL of the current page.
 
 If you have no browser tools, give `handoff.py` the URL of the deepest page that you know. Do not give the home page of the console.
 
@@ -63,14 +65,16 @@ Never do these steps yourself. Give them to the user:
 
 ### The browser-driver agent
 
-The agent does the browser steps in its own browser: a separate Brave or Chrome profile in its own window. Playwright MCP controls this browser through a local port, so the user can keep working. On Windows, the agent can also use Windows-MCP for a window of the operating system. The agent never does a human step.
+Use the agent only if the user asks for it. The agent does the browser steps in its own browser: a fresh Brave or Chrome profile in its own window. This profile has no sign-in of the user. Playwright MCP controls this browser through a local port, so the user can keep working. On Windows, the agent can also use Windows-MCP for a window of the operating system. The agent never does a human step.
+
+The agent cannot use the Brave profile of the user. Chromium 136 and later ignores the remote debugging port for the default profile folder.
 
 The user signs in to each console one time in this browser. The browser keeps the sign-in. When the agent finds a sign-in page, it gives the sign-in to the user as a human step.
 
-1. Start the browser. The command prints one JSON object with the status `started` or `running`:
+1. Start the browser. The command prints one JSON object with the status `started` or `running`. Without `--fresh`, the command refuses to start:
 
    ```bash
-   python3 SKILL_DIR/handoff.py browser
+   python3 SKILL_DIR/handoff.py browser --fresh
    ```
 
 2. Tell the user in one sentence that the agent works in its own browser window. Ask the user not to close that window.
@@ -118,7 +122,7 @@ python3 SKILL_DIR/handoff.py open --no-open \
   --step 'Click "Send changes for review".'
 ```
 
-- Do not give `--no-open` if you did not open the page. Then the script opens the URL in a new tab of the default browser.
+- Do not give `--no-open` if you did not open the page. Then the script opens the URL in a new tab of the Brave profile that `brave_profile` names in the user config file. If the file names no profile, the script uses the default browser.
 - The URL must use `https` and printable ASCII. Percent-encode all other characters.
 - The host must be an allowed host. If the script refuses the host, ask the user to add it. Do not add it yourself.
 

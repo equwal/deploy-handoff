@@ -247,8 +247,99 @@ class ConfigTest(unittest.TestCase):
         with mock.patch.object(handoff, "USER_CONFIG", self.folder / "missing.toml"):
             self.assertEqual(handoff.allowed_hosts(), handoff.read_hosts(handoff.SHIPPED_CONFIG))
 
+    def test_brave_profile_comes_from_the_user_file(self) -> None:
+        with mock.patch.object(handoff, "USER_CONFIG", self.write('brave_profile = " english "')):
+            self.assertEqual(handoff.brave_profile(), "english")
+
+    def test_brave_profile_is_optional(self) -> None:
+        with mock.patch.object(handoff, "USER_CONFIG", self.folder / "missing.toml"):
+            self.assertIsNone(handoff.brave_profile())
+        with mock.patch.object(handoff, "USER_CONFIG", self.write("allowed_hosts = []\n")):
+            self.assertIsNone(handoff.brave_profile())
+
+    def test_refuses_a_bad_brave_profile(self) -> None:
+        for text in ["brave_profile = 1\n", 'brave_profile = ""\n', 'brave_profile = " "\n']:
+            with (
+                self.subTest(text=text),
+                mock.patch.object(handoff, "USER_CONFIG", self.write(text)),
+                self.assertRaises(HandoffError),
+            ):
+                handoff.brave_profile()
+
+
+PROFILE_FOLDER = st.from_regex(r"Default|Profile [1-9][0-9]?", fullmatch=True)
+PROFILE_NAME = st.from_regex(r"[A-Za-z0-9 ]{1,12}", fullmatch=True)
+
+
+class FindProfileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name, "Local State")
+
+    def write(self, profiles: dict[str, str]) -> None:
+        """Write a Local State file in the form that Brave writes."""
+        cache = {folder: {"name": name} for folder, name in profiles.items()}
+        self.path.write_text(json.dumps({"profile": {"info_cache": cache}}), encoding="utf-8")
+
+    @given(st.dictionaries(PROFILE_FOLDER, PROFILE_NAME, min_size=1, max_size=6), st.data())
+    def test_finds_the_folder_of_a_name_in_any_case(
+        self, profiles: dict[str, str], data: st.DataObject
+    ) -> None:
+        folder = data.draw(st.sampled_from(sorted(profiles)))
+        name = profiles[folder]
+        assume(sum(other.casefold() == name.casefold() for other in profiles.values()) == 1)
+        self.write(profiles)
+        self.assertEqual(handoff.find_profile(self.path, name.swapcase()), folder)
+
+    def test_refuses_a_name_that_no_profile_or_two_profiles_have(self) -> None:
+        self.write({"Default": "Russian", "Profile 1": "Spanish", "Profile 2": "SPANISH"})
+        for name in ["German", "spanish"]:
+            with self.subTest(name=name), self.assertRaises(HandoffError):
+                handoff.find_profile(self.path, name)
+
+    def test_refuses_bad_files(self) -> None:
+        for text in [
+            "not json",
+            "[]",
+            '{"profile": {}}',
+            '{"profile": {"info_cache": []}}',
+            '{"profile": {"info_cache": {"Default": 1}}}',
+        ]:
+            self.path.write_text(text, encoding="utf-8")
+            with self.subTest(text=text), self.assertRaises(HandoffError):
+                handoff.find_profile(self.path, "english")
+        self.path.unlink()
+        with self.assertRaises(HandoffError):
+            handoff.find_profile(self.path, "english")
+
 
 class OpenPageTest(unittest.TestCase):
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        # The tests must not read the config file of the person who runs them.
+        self.user_config = self.folder / "config.toml"
+        patcher = mock.patch.object(handoff, "USER_CONFIG", self.user_config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_brave(self) -> Path:
+        """Make a Brave with the profiles Russian and english. Return its program."""
+        data = self.folder / "data"
+        data.mkdir()
+        profiles = {"Default": {"name": "Russian"}, "Profile 2": {"name": "english"}}
+        state = {"profile": {"info_cache": profiles}}
+        (data / "Local State").write_text(json.dumps(state), encoding="utf-8")
+        brave = self.folder / "brave.exe"
+        brave.write_bytes(b"")
+        for name, value in (("brave_data_dir", data), ("brave_candidates", [brave])):
+            patcher = mock.patch.object(handoff, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return brave
+
     def test_opens_a_new_tab(self) -> None:
         with mock.patch("webbrowser.open", return_value=True) as browser:
             handoff.open_page("https://github.com/")
@@ -257,6 +348,45 @@ class OpenPageTest(unittest.TestCase):
     def test_error_if_no_browser_opens(self) -> None:
         with mock.patch("webbrowser.open", return_value=False), self.assertRaises(HandoffError):
             handoff.open_page("https://github.com/")
+
+    def test_opens_the_profile_of_the_user_file(self) -> None:
+        brave = self.fake_brave()
+        self.user_config.write_text('brave_profile = "English"\n', encoding="utf-8")
+        with (
+            mock.patch.object(handoff, "start_browser") as start,
+            mock.patch("webbrowser.open") as default_browser,
+        ):
+            handoff.open_page("https://github.com/")
+        start.assert_called_once_with(
+            [str(brave), "--profile-directory=Profile 2", "https://github.com/"]
+        )
+        default_browser.assert_not_called()
+
+    def test_refuses_a_profile_that_brave_does_not_have(self) -> None:
+        # The script must not open a different profile, or a fresh one, in its place.
+        self.fake_brave()
+        self.user_config.write_text('brave_profile = "German"\n', encoding="utf-8")
+        with (
+            mock.patch.object(handoff, "start_browser") as start,
+            mock.patch("webbrowser.open") as default_browser,
+            self.assertRaises(HandoffError),
+        ):
+            handoff.open_page("https://github.com/")
+        start.assert_not_called()
+        default_browser.assert_not_called()
+
+    def test_refuses_a_profile_if_brave_is_not_installed(self) -> None:
+        self.fake_brave()
+        self.user_config.write_text('brave_profile = "english"\n', encoding="utf-8")
+        with (
+            mock.patch.object(handoff, "brave_candidates", return_value=[]),
+            mock.patch.object(handoff, "start_browser") as start,
+            mock.patch("webbrowser.open") as default_browser,
+            self.assertRaises(HandoffError),
+        ):
+            handoff.open_page("https://github.com/")
+        start.assert_not_called()
+        default_browser.assert_not_called()
 
 
 class VersionHandler(http.server.BaseHTTPRequestHandler):
@@ -279,6 +409,11 @@ class BrowserTest(unittest.TestCase):
         self.assertEqual(command[0], "brave.exe")
         self.assertIn(f"--user-data-dir={Path('profile')}", command)
         self.assertIn("--remote-debugging-port=9333", command)
+
+    def test_brave_candidates_leave_out_the_other_browsers(self) -> None:
+        candidates = [Path("brave.exe"), Path("chrome.exe"), Path("Brave Browser")]
+        with mock.patch.object(handoff, "browser_candidates", return_value=candidates):
+            self.assertEqual(handoff.brave_candidates(), [candidates[0], candidates[2]])
 
     def test_find_browser_takes_the_first_file(self) -> None:
         folder = tempfile.TemporaryDirectory()
@@ -554,7 +689,7 @@ class MainTest(unittest.TestCase):
     def test_browser_that_runs(self) -> None:
         self.patch("debug_version", mock.MagicMock(return_value={"Browser": "Chrome/140.0"}))
         start = self.patch("start_browser", mock.MagicMock())
-        code, result = self.run_main("browser")
+        code, result = self.run_main("browser", "--fresh")
         endpoint = f"http://127.0.0.1:{handoff.DEBUG_PORT}"
         expected = {"status": "running", "browser": "Chrome/140.0", "endpoint": endpoint}
         self.assertEqual((code, result), (0, expected))
@@ -565,7 +700,7 @@ class MainTest(unittest.TestCase):
         profile = self.patch("BROWSER_PROFILE", self.root / "browser")
         start = self.patch("start_browser", mock.MagicMock())
         with mock.patch("time.sleep"):
-            code, result = self.run_main("browser", "--exe", "brave.exe")
+            code, result = self.run_main("browser", "--fresh", "--exe", "brave.exe")
         self.assertEqual((code, result["status"]), (0, "started"))
         command = handoff.browser_command(Path("brave.exe"), profile, handoff.DEBUG_PORT)
         start.assert_called_once_with(command)
@@ -577,9 +712,23 @@ class MainTest(unittest.TestCase):
         self.patch("BROWSER_START_SECONDS", 0)
         self.patch("start_browser", mock.MagicMock())
         with mock.patch("time.sleep"):
-            code, result = self.run_main("browser", "--exe", "brave.exe")
+            code, result = self.run_main("browser", "--fresh", "--exe", "brave.exe")
         self.assertEqual((code, result["status"]), (1, "error"))
         self.assertIn(f"port {handoff.DEBUG_PORT}", str(result["error"]))
+
+    def test_browser_needs_the_fresh_flag(self) -> None:
+        # The user wants the Brave profile of the user. A fresh profile only if the user asks.
+        version = self.patch("debug_version", mock.MagicMock(return_value=None))
+        start = self.patch("start_browser", mock.MagicMock())
+        self.patch("BROWSER_PROFILE", self.root / "browser")
+        self.patch("BROWSER_START_SECONDS", 0)
+        with mock.patch("time.sleep"):
+            code, result = self.run_main("browser", "--exe", "brave.exe")
+        self.assertEqual((code, result["status"]), (1, "error"))
+        self.assertIn("--fresh", str(result["error"]))
+        version.assert_not_called()
+        start.assert_not_called()
+        self.assertFalse((self.root / "browser").exists())
 
     def test_pr_refuses_a_branch_that_is_not_pushed(self) -> None:
         work = make_repo(self.root)

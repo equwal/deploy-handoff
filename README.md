@@ -23,7 +23,7 @@ Requirements:
 
 ## How it works
 
-The plugin adds the skill `deploy-handoff` and the agent `browser-driver`. Claude uses the skill when a task reaches a human step, and when it opens a GitHub pull request. The skill starts the agent for the browser steps, then runs `skills/deploy-handoff/handoff.py`. Other tools can run the script in the same way.
+The plugin adds the skill `deploy-handoff` and the agent `browser-driver`. Claude uses the skill when a task reaches a human step, and when it opens a GitHub pull request. The skill drives your Brave profile, where you are signed in, and then runs `skills/deploy-handoff/handoff.py`. The agent starts only if you ask for a fresh browser. Other tools can run the script in the same way.
 
 Open a page and show the steps:
 
@@ -49,17 +49,25 @@ The script prints one JSON object, for example `{"status": "done", "note": ""}`.
 
 The script opens pages in a new tab of your default browser. To use a different browser, set the `BROWSER` environment variable. The Python `webbrowser` module reads it.
 
-## Browser driver
+To open pages in one Brave profile, add `brave_profile` to `~/.config/deploy-handoff/config.toml`. Write the name that Brave shows for the profile. The case does not matter.
 
-The agent [browser-driver](agents/browser-driver.md) does the browser steps before the dialog. It stops at the first human step. Then the dialog shows only that step.
-
-The agent works in its own browser, not in your browser. Start that browser with this command:
-
-```bash
-python3 skills/deploy-handoff/handoff.py browser
+```toml
+brave_profile = "english"
 ```
 
-The command starts Brave, or Chrome if Brave is not installed. `--exe PATH` names a different Chromium browser. The browser uses its own profile in `~/.config/deploy-handoff/browser` and opens the remote debugging port 9333 on 127.0.0.1. If the browser runs already, the command only prints its status.
+Then the script opens each page in that profile, also when Brave runs already, and ignores `BROWSER`. If Brave has no profile with this name, the script stops with an error. It does not open another profile. Install the Claude in Chrome extension in this profile. The skill uses it for the browser steps. The skill never starts a fresh profile unless you ask for it.
+
+## Browser driver
+
+The agent [browser-driver](agents/browser-driver.md) does the browser steps before the dialog in a fresh browser. It stops at the first human step. Then the dialog shows only that step. Claude does not start it unless you ask for a fresh browser.
+
+The agent works in its own browser with a fresh profile, not in your browser. Start that browser with this command. Without `--fresh`, the command refuses to start:
+
+```bash
+python3 skills/deploy-handoff/handoff.py browser --fresh
+```
+
+The command starts Brave, or Chrome if Brave is not installed. `--exe PATH` names a different Chromium browser. The browser uses its own profile in `~/.config/deploy-handoff/browser` and opens the remote debugging port 9333 on 127.0.0.1. If the browser runs already, the command only prints its status. The agent cannot use your Brave profile, because Chromium 136 and later ignores the remote debugging port for the default profile folder.
 
 [Playwright MCP](https://github.com/microsoft/playwright-mcp) controls this browser through the port. Thus the agent works when the window is behind other windows, and you can keep working. It also fills in file dialogs without the mouse. On Windows, the agent can use [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) for a window of the operating system, if you have it.
 

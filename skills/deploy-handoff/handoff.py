@@ -2,12 +2,14 @@
 
 A tool calls this script when it reaches a step that an AI agent must not do:
 the final deploy, publish, or billing click, a sign-in, an OAuth consent, or
-the creation of a GitHub pull request. The script opens the page in the
-default browser and shows a small dialog with the steps. It never clicks for
-the user. It prints the answer of the user as one JSON object on stdout.
+the creation of a GitHub pull request. The script opens the page in the Brave
+profile that brave_profile names in the user config file, or else in the default
+browser. It shows a small dialog with the steps. It never clicks for the user.
+It prints the answer of the user as one JSON object on stdout.
 
-The command "browser" starts a separate browser for the browser-driver agent of
-this plugin. Playwright MCP controls that browser through a local port.
+The command "browser --fresh" starts a separate browser with a fresh profile for
+the browser-driver agent of this plugin. Use it only if the user asks for it.
+Playwright MCP controls that browser through a local port.
 
 Exit codes: 0 done, started, or running, 1 error, 2 bad arguments, 3 not done,
 4 timeout.
@@ -41,8 +43,9 @@ USER_CONFIG = (
     / "deploy-handoff"
     / "config.toml"
 )
-# The browser-driver agent uses a browser with its own profile. Playwright MCP controls it
-# through this remote debugging port. .mcp.json at the root of the plugin uses the same port.
+# The browser-driver agent uses a browser with a fresh profile of its own. Playwright MCP
+# controls it through this remote debugging port. .mcp.json at the root of the plugin uses the
+# same port.
 DEBUG_PORT = 9333
 BROWSER_PROFILE = USER_CONFIG.with_name("browser")
 # The time in seconds that a new browser gets to open DEBUG_PORT.
@@ -136,13 +139,17 @@ def check_text(title: str, steps: Iterable[str]) -> None:
             )
 
 
-def read_hosts(path: Path) -> list[str]:
-    """Return the allowed_hosts list of the TOML file at path."""
+def read_config(path: Path) -> dict[str, object]:
+    """Return the data of the TOML file at path."""
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise HandoffError(f"Cannot read {path}: {exc}") from exc
-    hosts = data.get("allowed_hosts", [])
+
+
+def read_hosts(path: Path) -> list[str]:
+    """Return the allowed_hosts list of the TOML file at path."""
+    hosts = read_config(path).get("allowed_hosts", [])
     if not isinstance(hosts, list) or not all(
         isinstance(host, str) and HOST_RE.fullmatch(host) for host in hosts
     ):
@@ -156,9 +163,67 @@ def allowed_hosts() -> list[str]:
     return [host for path in paths for host in read_hosts(path)]
 
 
+def brave_profile() -> str | None:
+    """Return the name of the Brave profile in the user file, or None if the file names none."""
+    if not USER_CONFIG.is_file():
+        return None
+    name = read_config(USER_CONFIG).get("brave_profile")
+    if name is None:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        raise HandoffError(f"{USER_CONFIG}: brave_profile must be the name of a Brave profile.")
+    return name.strip()
+
+
+def brave_data_dir() -> Path:
+    """Return the folder in which Brave keeps its profiles."""
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return local / "BraveSoftware" / "Brave-Browser" / "User Data"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser"
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config / "BraveSoftware" / "Brave-Browser"
+
+
+def find_profile(local_state: Path, name: str) -> str:
+    """Return the folder of the Brave profile with the display name name. Ignore the case."""
+    try:
+        cache = json.loads(local_state.read_text(encoding="utf-8"))["profile"]["info_cache"]
+        folders = [
+            str(folder)
+            for folder, info in cache.items()
+            if str(info.get("name", "")).casefold() == name.casefold()
+        ]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise HandoffError(f"Cannot read the Brave profiles in {local_state}: {exc!r}") from exc
+    if len(folders) != 1:
+        raise HandoffError(
+            f"Found {len(folders)} Brave profiles with the name {name!r} in {local_state}. "
+            f"Set brave_profile in {USER_CONFIG} to the name of one profile."
+        )
+    return folders[0]
+
+
+def open_in_profile(url: str, profile: str) -> None:
+    """Open url in a new tab of the Brave profile with the display name profile."""
+    exe = next((path for path in brave_candidates() if path.is_file()), None)
+    if exe is None:
+        raise HandoffError(f"Found no Brave. {USER_CONFIG} sets brave_profile to {profile!r}.")
+    folder = find_profile(brave_data_dir() / "Local State", profile)
+    # If Brave runs already, this command gives the URL to that Brave and ends.
+    start_browser([str(exe), f"--profile-directory={folder}", url])
+
+
 def open_page(url: str) -> None:
-    """Open url in a new tab of the default browser. BROWSER can name a different browser."""
-    if not webbrowser.open(url, new=2):
+    """Open url in a new tab. BROWSER can name a different default browser.
+
+    Use the Brave profile of the user file if it names one. Then BROWSER has no effect.
+    """
+    profile = brave_profile()
+    if profile is not None:
+        open_in_profile(url, profile)
+    elif not webbrowser.open(url, new=2):
         raise HandoffError("No browser opened the page. Set the BROWSER environment variable.")
 
 
@@ -180,6 +245,11 @@ def browser_candidates() -> list[Path]:
         ]
     names = ("brave-browser", "brave", "google-chrome", "chromium", "chromium-browser")
     return [Path(path) for name in names if (path := shutil.which(name))]
+
+
+def brave_candidates() -> list[Path]:
+    """Return the usual paths of Brave on this system."""
+    return [path for path in browser_candidates() if "brave" in path.name.lower()]
 
 
 def find_browser(candidates: Iterable[Path]) -> Path:
@@ -450,7 +520,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     pr.add_argument("--repo", help="OWNER/NAME on GitHub (default: from the remote URL)")
     pr.add_argument("--remote", default="origin", help="the remote with the branch")
     pr.add_argument("--repo-dir", type=Path, default=Path(), help="the local repository")
-    browser = commands.add_parser("browser", help="start the browser of the browser-driver agent")
+    browser = commands.add_parser(
+        "browser", help="start a browser with a fresh profile for the browser-driver agent"
+    )
+    browser.add_argument(
+        "--fresh", action="store_true", help="confirm that the user asked for a fresh profile"
+    )
     browser.add_argument("--exe", type=Path, help="the browser program (default: Brave or Chrome)")
     return parser.parse_args(argv)
 
@@ -466,6 +541,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         if args.command == "browser":
+            if not args.fresh:
+                raise HandoffError(
+                    "This command starts a browser with a fresh profile and no sign-in. Start it "
+                    "only if the user asked for a fresh browser. Then give --fresh. Otherwise "
+                    "use the Brave profile of the user."
+                )
             return report(run_browser(args.exe))
         hosts = allowed_hosts()
         if args.command == "pr":
