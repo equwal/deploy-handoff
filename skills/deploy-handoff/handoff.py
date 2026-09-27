@@ -341,10 +341,22 @@ def github_repo(remote_url: str) -> str:
     return match["repo"]
 
 
+def fork_owner(remote_url: str, repo: str) -> str | None:
+    """Return the owner of a GitHub remote that is not repo, for example a fork of repo, or None."""
+    match = GITHUB_REMOTE_RE.fullmatch(remote_url.strip())
+    if match is None or match["repo"].lower() == repo.lower():
+        return None
+    return match["repo"].split("/")[0]
+
+
 def compare_url(repo: str, base: str | None, head: str, title: str, body: str) -> str:
-    """Return the GitHub page that shows a new pull request form with title and body filled in."""
-    # Without a base, GitHub compares head with the default branch.
-    refs = quote(head) if base is None else f"{quote(base)}...{quote(head)}"
+    """Return the GitHub page that shows a new pull request form with title and body filled in.
+
+    head is BRANCH, or OWNER:BRANCH for a branch in a fork of repo.
+    """
+    # Without a base, GitHub compares head with the default branch. A branch name has no ":".
+    head_ref = quote(head, safe="/:")
+    refs = head_ref if base is None else f"{quote(base)}...{head_ref}"
     query = urlencode({"expand": "1", "title": title, "body": body}, quote_via=quote)
     url = f"https://github.com/{repo}/compare/{refs}?{query}"
     if len(url) > MAX_PR_URL_LENGTH:
@@ -390,9 +402,18 @@ def check_pushed(repo_dir: Path, remote: str, branch: str) -> None:
 
 
 def find_open_pr(repo: str, head: str) -> str | None:
-    """Return the URL of the open pull request from head, or None if gh cannot find one."""
-    command = ["gh", "pr", "list", "--repo", repo, "--head", head, "--state", "open"]
-    command += ["--json", "url", "--jq", ".[0].url // empty"]
+    """Return the URL of the open pull request from head, or None if gh cannot find one.
+
+    head is BRANCH, or OWNER:BRANCH for a branch in a fork of repo.
+    """
+    owner, _, branch = head.rpartition(":")
+    command = ["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open"]
+    if owner:
+        # gh filters by the branch name only. The jq filter also checks the owner of the branch.
+        login = f'select(.headRepositoryOwner.login | ascii_downcase == "{owner.lower()}")'
+        command += ["--json", "url,headRepositoryOwner", "--jq", f"[.[] | {login}][0].url // empty"]
+    else:
+        command += ["--json", "url", "--jq", ".[0].url // empty"]
     try:
         result = subprocess.run(command, capture_output=True, encoding="utf-8", timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -404,17 +425,22 @@ def find_open_pr(repo: str, head: str) -> str | None:
 def pr_request(args: argparse.Namespace) -> Request:
     """Make the request that opens the GitHub form for a new pull request."""
     repo_dir: Path = args.repo_dir
-    repo: str = args.repo or github_repo(git(repo_dir, "remote", "get-url", args.remote))
+    remote_url = git(repo_dir, "remote", "get-url", args.remote)
+    repo: str = args.repo or github_repo(remote_url)
     if not REPO_RE.fullmatch(repo):
         raise HandoffError(f"{repo!r} is not a repository name of the form OWNER/NAME.")
     head: str = args.head or current_branch(repo_dir)
     check_pushed(repo_dir, args.remote, head)
+    # A pull request to another repository, for example from a fork to its upstream
+    # repository, names the branch as OWNER:BRANCH.
+    owner = fork_owner(remote_url, repo)
+    head_ref = head if owner is None else f"{owner}:{head}"
     try:
         body: str = args.body_file.read_text(encoding="utf-8") if args.body_file else args.body
     except OSError as exc:
         raise HandoffError(f"Cannot read {args.body_file}: {exc}") from exc
-    url = compare_url(repo, args.base, head, args.title, body)
-    return Request(f"Create pull request: {args.title}", url, PR_STEPS, pr=(repo, head))
+    url = compare_url(repo, args.base, head_ref, args.title, body)
+    return Request(f"Create pull request: {args.title}", url, PR_STEPS, pr=(repo, head_ref))
 
 
 class Dialog:

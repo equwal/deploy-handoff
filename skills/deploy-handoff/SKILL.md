@@ -148,6 +148,7 @@ The script opens the GitHub form with the title and the description filled in. T
 - The head is the current branch. The base is the default branch on GitHub. Use `--head` and `--base` to change them.
 - The script refuses the branch if the remote does not have the local commit.
 - The script gets OWNER/NAME from the URL of `origin`. Use `--remote` or `--repo OWNER/NAME` to change it.
+- For a pull request from a fork to its upstream repository, push the branch to the fork. Then give `--repo UPSTREAM_OWNER/NAME`. The script names the branch as OWNER:BRANCH, with OWNER from the URL of the remote.
 - Do not create a pull request with `gh pr create`, the GitHub API, or another tool.
 
 ## 4. Wait for the answer

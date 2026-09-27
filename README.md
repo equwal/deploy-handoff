@@ -45,6 +45,8 @@ Open the pull request form for the current branch:
 python3 skills/deploy-handoff/handoff.py pr --title "Add CSV export" --body-file body.md
 ```
 
+For a pull request from a fork to its upstream repository, push the branch to the fork and add `--repo UPSTREAM_OWNER/NAME`. The form then compares the branch of the fork with the upstream repository.
+
 The script prints one JSON object, for example `{"status": "done", "note": ""}`. [SKILL.md](skills/deploy-handoff/SKILL.md) lists all statuses and exit codes.
 
 ## Rule

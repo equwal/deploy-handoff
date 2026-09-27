@@ -525,9 +525,56 @@ class CompareUrlTest(unittest.TestCase):
         query = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
         self.assertEqual(query, {"expand": ["1"], "title": [title], "body": [body]})
 
+    @given(REPO, st.none() | branches(), OWNER, branches())
+    def test_keeps_the_owner_of_a_fork_branch(
+        self, repo: str, base: str | None, owner: str, branch: str
+    ) -> None:
+        # GitHub compares a branch of a fork as OWNER:BRANCH.
+        url = handoff.compare_url(repo, base, f"{owner}:{branch}", "t", "b")
+        head = urlsplit(url).path.removeprefix(f"/{repo}/compare/").split("...")[-1]
+        self.assertTrue(head.startswith(f"{owner}:"))
+        self.assertEqual(unquote(head), f"{owner}:{branch}")
+
     def test_refuses_long_urls(self) -> None:
         with self.assertRaises(HandoffError):
             handoff.compare_url("o/r", None, "b", "t", "x" * handoff.MAX_PR_URL_LENGTH)
+
+
+class ForkOwnerTest(unittest.TestCase):
+    @given(OWNER, NAME, st.sampled_from(REMOTE_FORMS), REPO)
+    def test_names_the_owner_only_for_another_repo(
+        self, owner: str, name: str, form: str, other: str
+    ) -> None:
+        remote = form.format(f"{owner}/{name}")
+        self.assertIsNone(handoff.fork_owner(remote, f"{owner}/{name}".swapcase()))
+        if other.lower() != f"{owner}/{name}".lower():
+            self.assertEqual(handoff.fork_owner(remote, other), owner)
+
+    def test_a_remote_that_is_not_on_github_has_no_owner(self) -> None:
+        self.assertIsNone(handoff.fork_owner("C:/repos/r.git", "o/r"))
+
+
+class FindOpenPrTest(unittest.TestCase):
+    def find(self, head: str) -> tuple[str | None, list[str]]:
+        result = subprocess.CompletedProcess[str]([], 0, "https://github.com/up/r/pull/7\n", "")
+        with mock.patch("subprocess.run", return_value=result) as run:
+            url = handoff.find_open_pr("up/r", head)
+        command: list[str] = run.call_args.args[0]
+        return url, command
+
+    def test_a_branch_of_the_same_repo(self) -> None:
+        url, command = self.find("main")
+        self.assertEqual(url, "https://github.com/up/r/pull/7")
+        self.assertEqual(command[command.index("--head") + 1], "main")
+        self.assertEqual(command[command.index("--jq") + 1], ".[0].url // empty")
+
+    def test_a_branch_of_a_fork_checks_the_owner(self) -> None:
+        # gh filters by the branch name only. The jq filter checks the owner of the branch.
+        url, command = self.find("Me:fix/x")
+        self.assertEqual(url, "https://github.com/up/r/pull/7")
+        self.assertEqual(command[command.index("--head") + 1], "fix/x")
+        self.assertIn("headRepositoryOwner", command[command.index("--json") + 1])
+        self.assertIn('== "me"', command[command.index("--jq") + 1])
 
 
 class GitTest(unittest.TestCase):
@@ -685,6 +732,21 @@ class MainTest(unittest.TestCase):
             "https://github.com/o/r/compare/main?expand=1&title=Add%20X&body=Why"
         )
         find_open_pr.assert_called_once_with("o/r", "main")
+
+    def test_pr_from_a_fork_names_the_owner_of_the_branch(self) -> None:
+        work = make_repo(self.root)
+        run_git("-C", str(work), "remote", "set-url", "origin", "https://github.com/me/r.git")
+        # check_pushed asks the remote. GitHub does not have this test repository.
+        self.patch("check_pushed", mock.MagicMock())
+        find_open_pr = self.patch("find_open_pr", mock.MagicMock(return_value=None))
+        code, result = self.run_main(
+            "pr", "--repo", "up/r", "--repo-dir", str(work), "--title", "Fix X", "--body", "Why"
+        )
+        self.assertEqual((code, result["status"]), (0, "done"))
+        self.open_page.assert_called_once_with(
+            "https://github.com/up/r/compare/me:main?expand=1&title=Fix%20X&body=Why"
+        )
+        find_open_pr.assert_called_once_with("up/r", "me:main")
 
     def test_browser_that_runs(self) -> None:
         self.patch("debug_version", mock.MagicMock(return_value={"Browser": "Chrome/140.0"}))

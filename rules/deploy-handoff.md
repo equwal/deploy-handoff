@@ -83,8 +83,9 @@ Open a pull request only when one of these is true:
 - The user asked for a pull request.
 - The push failed because the branch is protected, or the repository needs a review.
 - The repository belongs to a client, an employer, or another team.
+- The repository is a fork, and the change is useful to the upstream project.
 
-Open each pull request with `handoff.py pr` from the skill. Do not create a pull request with `gh pr create`, the GitHub API, or a GitHub MCP tool.
+Open each pull request with `handoff.py pr` from the skill. For a pull request from a fork to its upstream repository, add `--repo UPSTREAM_OWNER/NAME`. Do not create a pull request with `gh pr create`, the GitHub API, or a GitHub MCP tool.
 
 Never use `--no-verify`. Never push when the test suite fails.
 
