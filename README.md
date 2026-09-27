@@ -15,6 +15,8 @@ In Claude Code:
 /plugin install deploy-handoff@deploy-handoff
 ```
 
+Then add the [rule](#rule). The rule tells Claude when to use the plugin.
+
 Requirements:
 
 - Python 3.11 or later, with Tk. The python.org installers for Windows and macOS include Tk. On Debian and Ubuntu, install `python3-tk`.
@@ -45,6 +47,26 @@ python3 skills/deploy-handoff/handoff.py pr --title "Add CSV export" --body-file
 
 The script prints one JSON object, for example `{"status": "done", "note": ""}`. [SKILL.md](skills/deploy-handoff/SKILL.md) lists all statuses and exit codes.
 
+## Rule
+
+The skill tells Claude how to hand off a step. The rule [rules/deploy-handoff.md](rules/deploy-handoff.md) tells Claude when to do it. Without the rule, Claude can refuse a deploy task because one step is for a human. With the rule, Claude does all the other work and hands off only that step.
+
+The rule also tells Claude to:
+
+- Run a deploy command, for example `vercel deploy` or `gh release create`, when a command can do the step. The permission prompt of Claude Code is your approval. In a permission mode with no prompt, Claude asks you in the chat before a production deploy, a release, or a live payment change.
+- Drive the browser to the page of the last step, not only to the home page of a console.
+- Use the browser profile in which you are signed in. Claude starts a fresh profile only if you ask for it.
+- Push directly when you ask for a change, and open a pull request only when the repository needs one. The pull request form opens with `handoff.py pr`.
+
+To use the rule in all your projects, copy it to `~/.claude/rules/`:
+
+```bash
+mkdir -p ~/.claude/rules
+curl -fsSL -o ~/.claude/rules/deploy-handoff.md https://raw.githubusercontent.com/equwal/deploy-handoff/main/rules/deploy-handoff.md
+```
+
+To use it in one project only, copy it to `.claude/rules/` in that project. Claude Code reads the Markdown files in these folders at the start of each session. Edit the rule to fit your work. For example, remove the pull request section if your team reviews each change.
+
 ## Browser
 
 The script opens pages in a new tab of your default browser. To use a different browser, set the `BROWSER` environment variable. The Python `webbrowser` module reads it.
@@ -52,7 +74,7 @@ The script opens pages in a new tab of your default browser. To use a different 
 To open pages in one Brave profile, add `brave_profile` to `~/.config/deploy-handoff/config.toml`. Write the name that Brave shows for the profile. The case does not matter.
 
 ```toml
-brave_profile = "english"
+brave_profile = "Work"
 ```
 
 Then the script opens each page in that profile, also when Brave runs already, and ignores `BROWSER`. If Brave has no profile with this name, the script stops with an error. It does not open another profile. Install the Claude in Chrome extension in this profile. The skill uses it for the browser steps. The skill never starts a fresh profile unless you ask for it.

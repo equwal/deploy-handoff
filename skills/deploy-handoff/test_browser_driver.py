@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 AGENT = ROOT / "agents" / "browser-driver.md"
 SKILL = Path(__file__).with_name("SKILL.md")
+# Users copy this rule to ~/.claude/rules. It tells Claude when to use the skill.
+RULE = ROOT / "rules" / "deploy-handoff.md"
 # SKILL.md and the agent put the list of the human steps after this line.
 HUMAN_STEPS_LINE = "Never do these steps yourself. Give them to the user:"
 # The agent can only look at its browser and act in it. It gets no tool that runs code in
@@ -104,6 +106,7 @@ class BrowserDriverTest(unittest.TestCase):
             ("SKILL.md", self.skill),
             ("README.md", readme),
             (AGENT.name, self.agent),
+            (RULE.name, RULE.read_text(encoding="utf-8")),
         ]:
             with self.subTest(name=name):
                 self.assertNotRegex(text, r"handoff\.py browser(?! --fresh)")
