@@ -54,6 +54,7 @@ The skill tells Claude how to hand off a step. The rule [rules/deploy-handoff.md
 The rule also tells Claude to:
 
 - Run a deploy command, for example `vercel deploy` or `gh release create`, when a command can do the step. The permission prompt of Claude Code is your approval. In a permission mode with no prompt, Claude asks you in the chat before a production deploy, a release, or a live payment change.
+- Continue the other tasks of a request while one task waits for you in the dialog.
 - Drive the browser to the page of the last step, not only to the home page of a console.
 - Use the browser profile in which you are signed in. Claude starts a fresh profile only if you ask for it.
 - Push directly when you ask for a change, and open a pull request only when the repository needs one. The pull request form opens with `handoff.py pr`.

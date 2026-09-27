@@ -20,7 +20,23 @@ To hand off:
 
 1. Drive the browser as far as you can with your browser tools.
 2. Use the skill. Write the title and the steps in Simplified Technical English.
-3. Wait for the answer. If the answer is "done", check the result. Then continue the task.
+3. While the dialog is open, continue the other tasks. If the answer is "done", check the result. Then continue the task.
+
+## More than one task: stop only the blocked task
+
+A request can have more than one task, for example a web deploy, a store release, and a payment setup. A task is blocked when it gets to a step that you cannot do. Examples: a sign-in, an account creation, a CAPTCHA, a permission prompt that the user denied, or an error that you cannot fix.
+
+A blocked task does not stop the other tasks. When a task is blocked:
+
+1. Stop that task, and each task that needs its result.
+2. If the blocked step has a web page, hand it off with the skill. Run the dialog in the background.
+3. Continue all the other tasks while the dialog is open.
+4. When the user answers "done", check the result. Then continue the blocked task.
+5. Put each question for the user at the end, after the other tasks are done or blocked. A question ends your turn and stops the other tasks.
+
+At the end, give the result of each task: done or blocked. For a blocked task, give the cause and the step that the user must do.
+
+If the user tells you to stop, stop all the tasks.
 
 ## Deploys that need no browser: run the command
 
