@@ -207,6 +207,17 @@ class CheckTextTest(unittest.TestCase):
                 handoff.check_text(title, steps)
 
 
+class CheckPlaceTest(unittest.TestCase):
+    @given(st.lists(WORD, min_size=1, max_size=handoff.MAX_STEP_WORDS))
+    def test_accepts_a_short_name(self, words: list[str]) -> None:
+        handoff.check_place(" ".join(words))
+
+    def test_refuses_empty_long_and_unprintable_names(self) -> None:
+        for place in ["", "   ", "word " * 21, "tab\x1b[2J", "one\ntwo"]:
+            with self.subTest(place=place), self.assertRaises(HandoffError):
+                handoff.check_place(place)
+
+
 class ConfigTest(unittest.TestCase):
     def setUp(self) -> None:
         folder = tempfile.TemporaryDirectory()
@@ -646,6 +657,33 @@ class DialogTest(unittest.TestCase):
         self.assertEqual(texts[:3], expected)
         self.assertIn("Site: github.com", texts)
 
+    def test_terminal_step_names_the_terminal_and_shows_no_page(self) -> None:
+        # On 2026-10-04 a tool asked "Install ...? [Y/n]" in a terminal tab. The step had no
+        # page, so the dialog could not show it: the script wanted a URL on an allowed host.
+        request = Request(
+            "Install Herdr on basedmatrix",
+            None,
+            ('Press "Y".',),
+            place='Terminal tab "herdr: add basedmatrix"',
+        )
+        dialog = handoff.Dialog(request, 1, lambda: None)
+        texts = label_texts(dialog.root)
+        # Let the window run before it closes: on macOS, Tk stops the process (SIGTRAP) when
+        # a second window that never ran is closed in one test process.
+        dialog.root.after(50, dialog.done_button.invoke)
+        self.assertEqual(dialog.run(), ("done", ""))
+        expected = [
+            "Install Herdr on basedmatrix",
+            "Do these steps in the terminal:",
+            '1. Press "Y".',
+            'Where: Terminal tab "herdr: add basedmatrix"',
+        ]
+        self.assertEqual(texts[:4], expected)
+        self.assertIn(handoff.TERMINAL_WARNING, texts)
+        # No site, no address, and no text about the address bar of a browser.
+        self.assertFalse([text for text in texts if "Site:" in text or "https://" in text])
+        self.assertNotIn(handoff.WARNING, texts)
+
 
 class MenuDialogTest(unittest.TestCase):
     """Test the bemenu dialog with a fake bemenu."""
@@ -680,6 +718,14 @@ class MenuDialogTest(unittest.TestCase):
         self.assertIn("Publish 1.2", command)
         self.assertIn("1. Click it.", run.call_args.kwargs["input"].splitlines())
         self.assertIn("Site: github.com", run.call_args.kwargs["input"].splitlines())
+
+    def test_a_terminal_step_names_the_terminal(self) -> None:
+        self.request = Request("Log in", None, ('Type "/login".',), place="Terminal tab 2")
+        run = self.answer(self.pick("Done"))
+        self.assertEqual(self.run_menu(), ("done", ""))
+        lines = run.call_args.kwargs["input"].splitlines()
+        self.assertIn("Where: Terminal tab 2", lines)
+        self.assertFalse([line for line in lines if line.startswith("Site:")])
 
     def test_not_done(self) -> None:
         self.answer(self.pick("Not done"))
@@ -775,6 +821,47 @@ class MainTest(unittest.TestCase):
         self.assertEqual((code, result["status"]), (0, "done"))
         self.open_page.assert_not_called()
         self.dialog.assert_called_once()
+
+    def test_terminal_shows_the_dialog_and_opens_no_page(self) -> None:
+        # A sign-in of a command line program on 2026-10-04: the only page was claude.ai,
+        # which is not an allowed host, so "open" gave an error and the user got no dialog.
+        # A step in a terminal needs no host.
+        self.patch("SHIPPED_CONFIG", self.root / "no-hosts.toml")
+        code, result = self.run_main(
+            "terminal",
+            "--title",
+            "Log the agent user in to Claude Code",
+            "--where",
+            'Terminal tab "login vps"',
+            "--step",
+            'Type "/login".',
+            "--step",
+            "Follow the instructions on the screen.",
+        )
+        self.assertEqual((code, result), (0, {"status": "done", "note": "ok"}))
+        self.open_page.assert_not_called()
+        request = self.dialog.call_args.args[0]
+        self.assertEqual(
+            request,
+            Request(
+                "Log the agent user in to Claude Code",
+                None,
+                ('Type "/login".', "Follow the instructions on the screen."),
+                place='Terminal tab "login vps"',
+            ),
+        )
+        # The link of a page opens the page again. A terminal step has no page to open.
+        self.dialog.call_args.args[2]()
+        self.open_page.assert_not_called()
+
+    def test_terminal_refuses_bad_text(self) -> None:
+        for where, step in [("", "Press Y."), ("tab 1", "word " * 21), ("x\ty\x07", "Press Y.")]:
+            with self.subTest(where=where, step=step):
+                code, result = self.run_main(
+                    "terminal", "--title", "Do it", "--where", where, "--step", step
+                )
+                self.assertEqual((code, result["status"]), (1, "error"))
+        self.dialog.assert_not_called()
 
     def test_without_tk_uses_bemenu(self) -> None:
         # Linux desktop g runs Wayland without X11, so its Python has no tkinter.

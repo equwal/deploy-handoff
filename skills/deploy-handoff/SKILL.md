@@ -6,8 +6,10 @@ description: >-
   in, never a fresh profile. Then a dialog tells the user what to do: the final
   publish, pay, or submit click, a sign-in, an OAuth consent, or the creation of
   an API key. Examples: Stripe live mode, Google Play Console releases, F-Droid
-  merge requests, hosting consoles. Also use it to open every GitHub pull
-  request, instead of gh pr create or another pull request tool.
+  merge requests, hosting consoles. Also use it for a question that a program
+  asks in a terminal, for example an install question or the sign-in of a
+  command line program. Also use it to open every GitHub pull request, instead
+  of gh pr create or another pull request tool.
 ---
 
 # deploy-handoff
@@ -28,6 +30,7 @@ Before you do the work, select one of these modes:
 |---|---|
 | PowerShell command | A CLI or API does the step, for example `vercel deploy`, `gh release create`, or `stripe`. Run it with the PowerShell tool. |
 | Brave with the Claude extension | The `mcp__claude-in-chrome__*` tools are available, and the extension runs in the Brave profile of the user. This is the default browser mode. |
+| Terminal prompt | The step is a question that a program asks in a terminal: an install question, a sign-in of a command line program, or a confirmation. See "Hand off a step in a terminal". |
 | Windows-MCP | The step is in a desktop app or an operating system dialog, not in a web page. |
 | Dialog with instructions only | No automation tool is available, or the user wants to do all the steps. Run `handoff.py open` without `--no-open`. The script opens the page in the Brave profile of the user. |
 | Fresh Brave profile with Playwright | Only if the user asks for it. The `browser-driver` agent uses `handoff.py browser --fresh` and the Playwright MCP. |
@@ -37,9 +40,10 @@ Guess the mode with these rules, in this order:
 
 1. If the user named a mode in this session, use it.
 2. If a command can do the step, use "PowerShell command".
-3. If the step is not in a web page, use "Windows-MCP".
-4. If the `mcp__claude-in-chrome__*` tools are available, use "Brave with the Claude extension".
-5. Otherwise, use "Dialog with instructions only".
+3. If the step is a question that a program asks in a terminal, use "Terminal prompt".
+4. If the step is not in a web page, use "Windows-MCP".
+5. If the `mcp__claude-in-chrome__*` tools are available, use "Brave with the Claude extension".
+6. Otherwise, use "Dialog with instructions only".
 
 If a mode fails, use "Dialog with instructions only". Do not go to a fresh browser unless the user asks for it. Tell the user in one sentence which mode you use.
 
@@ -134,6 +138,33 @@ Useful start pages:
 | Google Play Console | `https://play.google.com/console` |
 | F-Droid merge requests | `https://gitlab.com/fdroid/fdroiddata/-/merge_requests` |
 | GitHub device sign-in | `https://github.com/login/device` |
+
+## Hand off a step in a terminal
+
+Some human steps are not on a web page. A program asks a question in a terminal and waits. Examples: an install question such as `Install ...? [Y/n]`, the sign-in of a command line program, a confirmation before a change that cannot be undone. Bring the user to the question. The user gives the answer.
+
+1. Do the work that comes before the question with commands.
+2. Start the program in a terminal that the user can see and type in. In the Claude Code desktop app, use the tool that types a command into a tab of the Terminal panel. Give the tab a title that names the step. If you have no such tool, give the user the one command that starts the program.
+3. Read the terminal. Make sure that the program shows the question and waits.
+4. Do not type the answer. Do not give the answer in another way, for example with `yes |` or with a `--yes` option.
+5. Show the dialog. Run the command in the background:
+
+   ```bash
+   python3 SKILL_DIR/handoff.py terminal \
+     --title "Install Herdr on the build server" \
+     --where 'Terminal tab "herdr: add build server"' \
+     --step 'Press "Y".'
+   ```
+
+6. Wait for the result of the step, not only for the dialog. For example, run the command that lists the new item until the item is there. Then continue. A `done` answer with no result is not done.
+
+The `terminal` command opens no page, so it needs no URL and no allowed host. `--where` names the terminal in 20 words or fewer. The title and the steps follow section 2.
+
+More than one question can wait at the same time. Start each program in its own tab, and name each tab in its dialog.
+
+If the program asks for a password, a code, or a key, the user types it in the terminal. Never ask for the value in the chat.
+
+Do not give the user a list of commands to copy and run. A command that needs no answer from a person is your work: run it. Give the user only the question.
 
 ## Open a pull request
 
