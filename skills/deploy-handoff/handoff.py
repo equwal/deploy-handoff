@@ -529,6 +529,9 @@ class MenuDialog:
     def __init__(self, request: Request, timeout_minutes: float, reopen: Callable[[], None]):
         if shutil.which("bemenu") is None:
             raise HandoffError("Cannot show the steps: install Python Tk or bemenu.")
+        # Without a session, bemenu exits as if the user pressed Escape.
+        if not os.environ.get("WAYLAND_DISPLAY"):
+            raise HandoffError("Cannot show the steps: WAYLAND_DISPLAY is not set.")
         self.title = request.title
         self.deadline = time.monotonic() + timeout_minutes * 60
         steps = [f"{number}. {step}" for number, step in enumerate(request.steps, 1)]

@@ -654,6 +654,9 @@ class MenuDialogTest(unittest.TestCase):
         which = mock.patch("shutil.which", return_value="/usr/bin/bemenu")
         which.start()
         self.addCleanup(which.stop)
+        display = mock.patch.dict("os.environ", {"WAYLAND_DISPLAY": "wayland-1"})
+        display.start()
+        self.addCleanup(display.stop)
         self.request = Request("Publish 1.2", "https://github.com/o", ("Click it.",))
 
     def answer(self, *results: subprocess.CompletedProcess[str] | Exception) -> mock.MagicMock:
@@ -702,6 +705,14 @@ class MenuDialogTest(unittest.TestCase):
     def test_no_bemenu_is_an_error(self) -> None:
         with (
             mock.patch("shutil.which", return_value=None),
+            self.assertRaises(HandoffError),
+        ):
+            handoff.MenuDialog(self.request, 1, lambda: None)
+
+    def test_no_wayland_session_is_an_error(self) -> None:
+        # Over SSH on g, bemenu exited with code 1 and the script said "not_done".
+        with (
+            mock.patch.dict("os.environ", {"WAYLAND_DISPLAY": ""}),
             self.assertRaises(HandoffError),
         ):
             handoff.MenuDialog(self.request, 1, lambda: None)
