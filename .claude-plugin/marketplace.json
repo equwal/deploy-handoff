@@ -10,7 +10,7 @@
     {
       "name": "deploy-handoff",
       "description": "Drives your browser through deploy, billing, and sign-in pages, and opens pull request forms. Then a dialog shows you the final click. Claude never makes it for you.",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "author": {
         "name": "equwal"
       },
