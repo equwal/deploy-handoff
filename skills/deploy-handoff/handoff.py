@@ -26,16 +26,23 @@ import shutil
 import subprocess
 import sys
 import time
-import tkinter as tk
 import tomllib
 import urllib.request
 import webbrowser
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import font as tkfont
-from tkinter import ttk
 from urllib.parse import quote, urlencode, urlsplit
+
+# A Wayland desktop without X11 has no Tk. Then MenuDialog shows the steps in bemenu.
+try:
+    import tkinter as tk
+    from tkinter import font as tkfont
+    from tkinter import ttk
+
+    HAVE_TK = True
+except ImportError:
+    HAVE_TK = False
 
 SHIPPED_CONFIG = Path(__file__).with_name("config.toml")
 USER_CONFIG = (
@@ -513,6 +520,52 @@ class Dialog:
         return self.status, self.note_text
 
 
+class MenuDialog:
+    """The steps in a bemenu list, for a Wayland desktop that has no Tk."""
+
+    DONE = "Done"
+    NOT_DONE = "Not done"
+
+    def __init__(self, request: Request, timeout_minutes: float, reopen: Callable[[], None]):
+        if shutil.which("bemenu") is None:
+            raise HandoffError("Cannot show the steps: install Python Tk or bemenu.")
+        self.title = request.title
+        self.deadline = time.monotonic() + timeout_minutes * 60
+        steps = [f"{number}. {step}" for number, step in enumerate(request.steps, 1)]
+        self.items = [
+            *steps,
+            f"Site: {urlsplit(request.url).hostname}",
+            "If you cannot finish, type the reason and press Enter.",
+            self.DONE,
+            self.NOT_DONE,
+        ]
+
+    def run(self) -> tuple[str, str]:
+        """Show the list until the user selects an answer or the time ends."""
+        while (remaining := self.deadline - time.monotonic()) > 0:
+            command = ["bemenu", "--list", str(len(self.items)), "--prompt", self.title]
+            try:
+                answer = subprocess.run(
+                    command,
+                    input="\n".join(self.items),
+                    capture_output=True,
+                    text=True,
+                    timeout=remaining,
+                )
+            except subprocess.TimeoutExpired:
+                break
+            choice = answer.stdout.strip()
+            # Escape makes bemenu exit with code 1.
+            if answer.returncode != 0 or choice == self.NOT_DONE:
+                return "not_done", ""
+            if choice == self.DONE:
+                return "done", ""
+            if choice not in self.items:
+                return "not_done", choice
+            # The user selected a step or the site. Show the list again.
+        return "timeout", ""
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     """Read the command line."""
     common = argparse.ArgumentParser(add_help=False)
@@ -584,9 +637,11 @@ def main(argv: list[str] | None = None) -> int:
         # With --no-open, the caller drove a browser to the page already.
         if args.command == "pr" or not args.no_open:
             open_page(request.url)
+        show = Dialog if HAVE_TK else MenuDialog
+        dialog = show(request, args.timeout, lambda: open_page(request.url))
     except HandoffError as exc:
         return report({"status": "error", "error": str(exc)})
-    status, note = Dialog(request, args.timeout, lambda: open_page(request.url)).run()
+    status, note = dialog.run()
     result: dict[str, str | None] = {"status": status, "note": note}
     if request.pr is not None and status == "done":
         result["pr_url"] = find_open_pr(*request.pr)

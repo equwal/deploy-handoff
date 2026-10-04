@@ -16,7 +16,7 @@ description: >-
 
 Run the commands in a POSIX shell. On Windows, use Git Bash. Windows PowerShell 5.1 removes the double quotation marks inside the arguments.
 
-The script shows a small dialog on top of the browser. The dialog tells the user what to do. The user does the last step and clicks **Done** or **Not done**. The script never clicks for the user.
+The script shows a small dialog on top of the browser. The dialog tells the user what to do. The user does the last step and clicks **Done** or **Not done**. The script never clicks for the user. If Python has no Tk, for example on a Wayland desktop without X11, the script shows the steps in a `bemenu` list instead.
 
 ## 0. Select the automation mode
 

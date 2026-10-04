@@ -647,6 +647,66 @@ class DialogTest(unittest.TestCase):
         self.assertIn("Site: github.com", texts)
 
 
+class MenuDialogTest(unittest.TestCase):
+    """Test the bemenu dialog with a fake bemenu."""
+
+    def setUp(self) -> None:
+        which = mock.patch("shutil.which", return_value="/usr/bin/bemenu")
+        which.start()
+        self.addCleanup(which.stop)
+        self.request = Request("Publish 1.2", "https://github.com/o", ("Click it.",))
+
+    def answer(self, *results: subprocess.CompletedProcess[str] | Exception) -> mock.MagicMock:
+        run = mock.MagicMock(side_effect=list(results))
+        patcher = mock.patch("subprocess.run", run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return run
+
+    def pick(self, choice: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["bemenu"], code, stdout=choice + "\n")
+
+    def run_menu(self, timeout_minutes: float = 1) -> tuple[str, str]:
+        return handoff.MenuDialog(self.request, timeout_minutes, lambda: None).run()
+
+    def test_done(self) -> None:
+        run = self.answer(self.pick("Done"))
+        self.assertEqual(self.run_menu(), ("done", ""))
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "bemenu")
+        self.assertIn("Publish 1.2", command)
+        self.assertIn("1. Click it.", run.call_args.kwargs["input"].splitlines())
+        self.assertIn("Site: github.com", run.call_args.kwargs["input"].splitlines())
+
+    def test_not_done(self) -> None:
+        self.answer(self.pick("Not done"))
+        self.assertEqual(self.run_menu(), ("not_done", ""))
+
+    def test_escape_means_not_done(self) -> None:
+        self.answer(self.pick("", code=1))
+        self.assertEqual(self.run_menu(), ("not_done", ""))
+
+    def test_typed_text_is_the_note(self) -> None:
+        self.answer(self.pick("  no access  "))
+        self.assertEqual(self.run_menu(), ("not_done", "no access"))
+
+    def test_a_step_shows_the_list_again(self) -> None:
+        run = self.answer(self.pick("1. Click it."), self.pick("Done"))
+        self.assertEqual(self.run_menu(), ("done", ""))
+        self.assertEqual(run.call_count, 2)
+
+    def test_timeout(self) -> None:
+        self.answer(subprocess.TimeoutExpired(["bemenu"], 1))
+        self.assertEqual(self.run_menu(), ("timeout", ""))
+
+    def test_no_bemenu_is_an_error(self) -> None:
+        with (
+            mock.patch("shutil.which", return_value=None),
+            self.assertRaises(HandoffError),
+        ):
+            handoff.MenuDialog(self.request, 1, lambda: None)
+
+
 class MainTest(unittest.TestCase):
     """Test main with a fake browser and a fake dialog."""
 
@@ -704,6 +764,15 @@ class MainTest(unittest.TestCase):
         self.assertEqual((code, result["status"]), (0, "done"))
         self.open_page.assert_not_called()
         self.dialog.assert_called_once()
+
+    def test_without_tk_uses_bemenu(self) -> None:
+        # Linux desktop g runs Wayland without X11, so its Python has no tkinter.
+        self.patch("HAVE_TK", False)
+        menu = self.patch("MenuDialog", mock.MagicMock())
+        menu.return_value.run.return_value = ("done", "")
+        self.assertEqual(self.open_url("https://github.com/o")[0], 0)
+        menu.assert_called_once()
+        self.dialog.assert_not_called()
 
     def test_open_refuses_long_steps(self) -> None:
         code, result = self.run_main(
