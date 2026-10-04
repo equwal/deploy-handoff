@@ -39,6 +39,17 @@ python3 skills/deploy-handoff/handoff.py open \
 
 If the agent already drove a browser to the page, it adds `--no-open`. Then the script shows only the dialog. The script refuses a title or a step with more than 20 words or with a semicolon.
 
+Show the steps for a question that a program asks in a terminal. The command opens no page and needs no allowed host:
+
+```bash
+python3 skills/deploy-handoff/handoff.py terminal \
+  --title "Install Herdr on the build server" \
+  --where 'Terminal tab "herdr: add build server"' \
+  --step 'Press "Y".'
+```
+
+Claude starts the program in a terminal that you see and stops at the question. You give the answer.
+
 Open the pull request form for the current branch:
 
 ```bash

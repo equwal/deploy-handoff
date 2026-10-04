@@ -52,8 +52,11 @@ Use the skill for these steps:
 - The creation of an account, an API key, a webhook secret, or another secret. Tell the user where to put the secret. Never ask for the secret in the chat or in the dialog.
 - A step that needs the explicit yes of the user, for example the switch to live payments.
 - A deploy command that a permission check denied. Do not run the command again. If the platform has a web page for the same step, hand off that page.
+- A question that a program asks in a terminal before it continues: an install question, the sign-in of a command line program, or a confirmation of a change that cannot be undone.
 
-If the step has no web page, ask the user in the chat.
+If the step is a question in a terminal, start the program in a terminal that the user sees, stop at the question, and use the terminal handoff of the skill (`handoff.py terminal`). Do not type the answer.
+
+If the step has no web page and no question in a terminal, ask the user in the chat.
 
 To hand off:
 
@@ -90,6 +93,8 @@ For these steps:
 5. If the user denies the command, do not run it again. Hand off the web page for the same step, or ask the user.
 
 Do not hand off a step that a command can do. A handoff for a command that you can run wastes the time of the user.
+
+Do not give the user a list of commands to copy and run. This is the same error. Work on a server through SSH is also a command: copy the build, install the package, restart the service. Run each command. Bring the user to the one step that needs a person, and stop there.
 
 On Windows, run `handoff.py` in Git Bash, not in Windows PowerShell 5.1. PowerShell 5.1 removes the double quotation marks in the arguments.
 
