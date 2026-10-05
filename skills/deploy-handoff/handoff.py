@@ -49,7 +49,6 @@ try:
 except ImportError:
     HAVE_TK = False
 
-SHIPPED_CONFIG = Path(__file__).with_name("config.toml")
 USER_CONFIG = (
     Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     / "deploy-handoff"
@@ -124,14 +123,12 @@ class Request:
         return f"Site: {urlsplit(self.url).hostname}"
 
 
-def match_domain(host: str, domains: Iterable[str]) -> str | None:
-    """Return the most specific domain that is host or a parent domain of host."""
-    matches = [domain for domain in domains if host == domain or host.endswith("." + domain)]
-    return max(matches, key=len, default=None)
+def check_url(url: str) -> None:
+    """Raise HandoffError if url is not an https URL with a plain host name.
 
-
-def check_url(url: str, domains: Iterable[str]) -> str:
-    """Return the domain that allows url. Raise HandoffError if the script must not open url."""
+    There is no list of allowed hosts: the user asks Claude to use only sites he trusts.
+    The dialog shows the host, so the user can compare it with the address bar.
+    """
     if "\\" in url or not URL_CHARS_RE.fullmatch(url):
         raise HandoffError(
             f"The URL must be printable ASCII with no spaces or backslashes: {url!r}"
@@ -144,13 +141,6 @@ def check_url(url: str, domains: Iterable[str]) -> str:
     # The netloc must be the host only: no user name, no password, and no port.
     if parts.scheme != "https" or parts.netloc.lower() != host or not HOST_RE.fullmatch(host):
         raise HandoffError(f"The URL must use https and a plain host name: {url}")
-    domain = match_domain(host, domains)
-    if domain is None:
-        raise HandoffError(
-            f"{host} is not an allowed host. Ask the user to add it to allowed_hosts in "
-            f"{USER_CONFIG}. Do not add it yourself."
-        )
-    return domain
 
 
 def check_text(title: str, steps: Iterable[str]) -> None:
@@ -181,22 +171,6 @@ def read_config(path: Path) -> dict[str, object]:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise HandoffError(f"Cannot read {path}: {exc}") from exc
-
-
-def read_hosts(path: Path) -> list[str]:
-    """Return the allowed_hosts list of the TOML file at path."""
-    hosts = read_config(path).get("allowed_hosts", [])
-    if not isinstance(hosts, list) or not all(
-        isinstance(host, str) and HOST_RE.fullmatch(host) for host in hosts
-    ):
-        raise HandoffError(f"{path}: allowed_hosts must be a list of lowercase host names.")
-    return hosts
-
-
-def allowed_hosts() -> list[str]:
-    """Return the hosts in the shipped file, and in the user file if it exists."""
-    paths = [SHIPPED_CONFIG, USER_CONFIG] if USER_CONFIG.is_file() else [SHIPPED_CONFIG]
-    return [host for path in paths for host in read_hosts(path)]
 
 
 def brave_profile() -> str | None:
@@ -680,13 +654,12 @@ def main(argv: list[str] | None = None) -> int:
             check_place(args.where)
             request = Request(args.title, None, tuple(args.step), place=args.where)
         else:
-            hosts = allowed_hosts()
             if args.command == "pr":
                 request = pr_request(args)
             else:
                 check_text(args.title, args.step)
                 request = Request(args.title, args.url, tuple(args.step))
-            check_url(str(request.url), hosts)
+            check_url(str(request.url))
             # With --no-open, the caller drove a browser to the page already.
             if args.command == "pr" or not args.no_open:
                 open_page(str(request.url))

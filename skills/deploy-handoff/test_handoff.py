@@ -29,19 +29,13 @@ from handoff import HandoffError, Request
 
 T = TypeVar("T")
 
-DOMAINS = ["github.com", "stripe.com", "google.com", "play.google.com"]
 LABEL = st.from_regex(r"[a-z0-9-]{1,12}", fullmatch=True)
-DOMAIN = st.lists(LABEL, min_size=2, max_size=3).map(".".join)
-ALLOWED_HOST = st.builds(
-    lambda prefix, domain: ".".join([*prefix, domain]),
-    st.lists(LABEL, max_size=3),
-    st.sampled_from(DOMAINS),
-)
+HOST = st.lists(LABEL, min_size=2, max_size=5).map(".".join)
 # A path and a query in printable ASCII. They contain "@" and ":", which must not change the host.
 REST = st.from_regex(
     r"(/[A-Za-z0-9._~%!$&'()*+,;=:@-]*)*(\?[A-Za-z0-9._~%!$&'()*+,;=:@/?-]*)?", fullmatch=True
 )
-ALLOWED_URL = st.builds(lambda host, rest: f"https://{host}{rest}", ALLOWED_HOST, REST)
+URL = st.builds(lambda host, rest: f"https://{host}{rest}", HOST, REST)
 TEXT = st.text(st.characters(codec="utf-8"), max_size=100)
 REPO = st.from_regex(r"[A-Za-z0-9-]{1,10}/[A-Za-z0-9_-]{1,10}", fullmatch=True)
 OWNER = st.from_regex(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,10}[A-Za-z0-9])?", fullmatch=True)
@@ -72,24 +66,6 @@ def branches(draw: st.DrawFn) -> str:
     return name
 
 
-@st.composite
-def host_and_domains(draw: st.DrawFn) -> tuple[str, list[str]]:
-    """Make a host near an allowed domain: the domain, a subdomain, or a look-alike."""
-    domains = draw(st.lists(DOMAIN, min_size=1, max_size=4))
-    domain = draw(st.sampled_from(domains))
-    label = draw(LABEL)
-    glue = draw(st.sampled_from([".", "", "-"]))
-    host = draw(st.sampled_from([domain, label + glue + domain, domain + glue + label]))
-    return host, domains
-
-
-def reference_match(host: str, domains: list[str]) -> str | None:
-    """Do the work of match_domain slowly: compare the labels from the right."""
-    labels = host.split(".")
-    found = [d for d in domains if labels[-len(d.split(".")) :] == d.split(".")]
-    return max(found, key=len, default=None)
-
-
 def label_texts(widget: tk.Misc) -> list[str]:
     """Return the text of each label in widget, in the order in which the dialog made them."""
     texts: list[str] = []
@@ -115,57 +91,35 @@ def make_repo(root: Path) -> Path:
     return work
 
 
-class MatchDomainTest(unittest.TestCase):
-    @given(host_and_domains())
-    def test_same_as_reference(self, case: tuple[str, list[str]]) -> None:
-        host, domains = case
-        self.assertEqual(handoff.match_domain(host, domains), reference_match(host, domains))
-
-    @given(st.lists(LABEL, max_size=3), DOMAIN)
-    def test_allows_subdomains(self, prefix: list[str], domain: str) -> None:
-        self.assertEqual(handoff.match_domain(".".join([*prefix, domain]), [domain]), domain)
-
-    @given(LABEL, DOMAIN)
-    def test_refuses_look_alikes(self, label: str, domain: str) -> None:
-        self.assertIsNone(handoff.match_domain(label + domain, [domain]))
-
-    def test_most_specific_domain_wins(self) -> None:
-        self.assertEqual(handoff.match_domain("a.play.google.com", DOMAINS), "play.google.com")
-
-
 class CheckUrlTest(unittest.TestCase):
-    @given(ALLOWED_HOST, REST)
-    def test_accepts_allowed_hosts(self, host: str, rest: str) -> None:
-        domain = handoff.match_domain(host, DOMAINS)
-        self.assertEqual(handoff.check_url(f"https://{host}{rest}", DOMAINS), domain)
+    @given(HOST, REST)
+    def test_accepts_any_plain_host(self, host: str, rest: str) -> None:
+        handoff.check_url(f"https://{host}{rest}")
 
     @given(
-        ALLOWED_URL,
+        URL,
         st.integers(min_value=0),
         st.sampled_from(["\\", " ", "\t", "\n", "\x00", "\x7f", "\u00e9", "\u3002", "\u200b"]),
     )
     def test_refuses_unsafe_characters(self, url: str, index: int, char: str) -> None:
         index %= len(url) + 1
         with self.assertRaises(HandoffError):
-            handoff.check_url(url[:index] + char + url[index:], DOMAINS)
+            handoff.check_url(url[:index] + char + url[index:])
 
-    @given(ALLOWED_HOST, st.from_regex(r"[A-Za-z0-9._~!$&'()*+,;=:-]{0,12}", fullmatch=True))
+    @given(HOST, st.from_regex(r"[A-Za-z0-9._~!$&'()*+,;=:-]{0,12}", fullmatch=True))
     def test_refuses_user_info(self, host: str, user: str) -> None:
         with self.assertRaises(HandoffError):
-            handoff.check_url(f"https://{user}@{host}/", DOMAINS)
+            handoff.check_url(f"https://{user}@{host}/")
 
-    @given(ALLOWED_HOST, st.integers(min_value=0, max_value=65535))
+    @given(HOST, st.integers(min_value=0, max_value=65535))
     def test_refuses_ports(self, host: str, port: int) -> None:
         with self.assertRaises(HandoffError):
-            handoff.check_url(f"https://{host}:{port}/", DOMAINS)
+            handoff.check_url(f"https://{host}:{port}/")
 
     def test_refuses_known_attacks(self) -> None:
         for url in [
             "",
             "http://github.com/",
-            "https://evil.com/",
-            "https://evilgithub.com/",
-            "https://github.com.evil.com/",
             "https://github.com@evil.com/",
             "https://evil.com\\@github.com/",
             "https://evil.com\\.github.com/",
@@ -180,10 +134,10 @@ class CheckUrlTest(unittest.TestCase):
             "javascript:alert(1)//github.com/",
         ]:
             with self.subTest(url=url), self.assertRaises(HandoffError):
-                handoff.check_url(url, DOMAINS)
+                handoff.check_url(url)
 
     def test_ignores_the_case_of_the_host(self) -> None:
-        self.assertEqual(handoff.check_url("https://GitHub.COM/equwal", DOMAINS), "github.com")
+        handoff.check_url("https://GitHub.COM/equwal")
 
 
 class CheckTextTest(unittest.TestCase):
@@ -229,34 +183,13 @@ class ConfigTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_shipped_file_allows_github(self) -> None:
-        self.assertIn("github.com", handoff.read_hosts(handoff.SHIPPED_CONFIG))
-
-    def test_refuses_bad_files(self) -> None:
-        for text in [
-            'allowed_hosts = ["https://github.com"]\n',
-            'allowed_hosts = ["GitHub.com"]\n',
-            "allowed_hosts = [1]\n",
-            'allowed_hosts = "github.com"\n',
-            "not toml\n",
-        ]:
-            with self.subTest(text=text), self.assertRaises(HandoffError):
-                handoff.read_hosts(self.write(text))
+    def test_refuses_a_bad_file(self) -> None:
+        with self.assertRaises(HandoffError):
+            handoff.read_config(self.write("not toml\n"))
 
     def test_refuses_a_missing_file(self) -> None:
         with self.assertRaises(HandoffError):
-            handoff.read_hosts(self.folder / "missing.toml")
-
-    def test_user_file_adds_hosts(self) -> None:
-        user = self.write('allowed_hosts = ["example.com"]\n')
-        with mock.patch.object(handoff, "USER_CONFIG", user):
-            hosts = handoff.allowed_hosts()
-        self.assertIn("example.com", hosts)
-        self.assertIn("github.com", hosts)
-
-    def test_user_file_is_optional(self) -> None:
-        with mock.patch.object(handoff, "USER_CONFIG", self.folder / "missing.toml"):
-            self.assertEqual(handoff.allowed_hosts(), handoff.read_hosts(handoff.SHIPPED_CONFIG))
+            handoff.read_config(self.folder / "missing.toml")
 
     def test_brave_profile_comes_from_the_user_file(self) -> None:
         with mock.patch.object(handoff, "USER_CONFIG", self.write('brave_profile = " english "')):
@@ -527,7 +460,7 @@ class CompareUrlTest(unittest.TestCase):
         self, repo: str, base: str | None, head: str, title: str, body: str
     ) -> None:
         url = handoff.compare_url(repo, base, head, title, body)
-        self.assertEqual(handoff.check_url(url, ["github.com"]), "github.com")
+        handoff.check_url(url)
         parts = urlsplit(url)
         prefix = f"/{repo}/compare/"
         self.assertTrue(parts.path.startswith(prefix))
@@ -771,9 +704,6 @@ class MainTest(unittest.TestCase):
         folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        config = self.root / "config.toml"
-        config.write_text('allowed_hosts = ["github.com"]\n', encoding="utf-8")
-        self.patch("SHIPPED_CONFIG", config)
         self.patch("USER_CONFIG", self.root / "missing.toml")
         self.open_page = self.patch("open_page", mock.MagicMock())
         self.dialog = self.patch("Dialog", mock.MagicMock())
@@ -826,7 +756,6 @@ class MainTest(unittest.TestCase):
         # A sign-in of a command line program on 2026-10-04: the only page was claude.ai,
         # which is not an allowed host, so "open" gave an error and the user got no dialog.
         # A step in a terminal needs no host.
-        self.patch("SHIPPED_CONFIG", self.root / "no-hosts.toml")
         code, result = self.run_main(
             "terminal",
             "--title",
@@ -879,11 +808,12 @@ class MainTest(unittest.TestCase):
         self.assertEqual((code, result["status"]), (1, "error"))
         self.open_page.assert_not_called()
 
-    def test_open_refuses_hosts_that_are_not_allowed(self) -> None:
-        code, result = self.open_url("https://evil.example/")
-        self.assertEqual((code, result["status"]), (1, "error"))
-        self.open_page.assert_not_called()
-        self.dialog.assert_not_called()
+    def test_open_accepts_any_https_host(self) -> None:
+        # 2026-10-04: a Runbox filter handoff failed with "runbox.com is not an allowed host".
+        # The user asks Claude to use only sites he trusts, so there is no host list.
+        code, result = self.open_url("https://runbox.com/app/")
+        self.assertEqual((code, result["status"]), (0, "done"))
+        self.open_page.assert_called_once_with("https://runbox.com/app/")
 
     def test_pr(self) -> None:
         work = make_repo(self.root)
