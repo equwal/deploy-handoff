@@ -19,3 +19,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Contextual Copyleft AI (CCAI) Clause
+Added 2026-10-04.
+If this software is used to train, fine-tune, or otherwise generate any machine learning model or generative AI
+system, any resulting model, dataset, or system must be released under terms no more restrictive than this license.
+This includes the requirement to make available the training code, a description of the data used in training, and
+the model’s parameters and architecture. Providing access to such a model or its outputs via a network is
+considered distribution and triggers this obligation.
+
+Paper: https://arxiv.org/pdf/2507.12713
+Mirror: https://dickt.store/fuckai.pdf
