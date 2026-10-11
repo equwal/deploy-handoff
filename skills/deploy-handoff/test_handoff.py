@@ -6,15 +6,21 @@ Chrome with a temporary profile, and shows its window for a short time.
 
 import http.server
 import json
+import os
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import unittest
 import urllib.request
 from contextlib import redirect_stdout
+from datetime import datetime
 from io import StringIO
+from itertools import pairwise
 from pathlib import Path
 from tkinter import ttk
 from typing import TypeVar
@@ -209,6 +215,25 @@ class ConfigTest(unittest.TestCase):
                 self.assertRaises(HandoffError),
             ):
                 handoff.brave_profile()
+
+    def test_lock_dir_comes_from_the_user_file(self) -> None:
+        config = self.write("lock_dir = ' W:/coop/handoff.lock '")
+        with mock.patch.object(handoff, "USER_CONFIG", config):
+            self.assertEqual(handoff.lock_dir(), Path("W:/coop/handoff.lock"))
+
+    def test_lock_dir_is_beside_the_user_file_by_default(self) -> None:
+        for config in [self.folder / "missing.toml", self.write('brave_profile = "english"\n')]:
+            with mock.patch.object(handoff, "USER_CONFIG", config):
+                self.assertEqual(handoff.lock_dir(), self.folder / "handoff.lock")
+
+    def test_refuses_a_bad_lock_dir(self) -> None:
+        for text in ["lock_dir = 1\n", 'lock_dir = ""\n', 'lock_dir = " "\n']:
+            with (
+                self.subTest(text=text),
+                mock.patch.object(handoff, "USER_CONFIG", self.write(text)),
+                self.assertRaises(HandoffError),
+            ):
+                handoff.lock_dir()
 
 
 PROFILE_FOLDER = st.from_regex(r"Default|Profile [1-9][0-9]?", fullmatch=True)
@@ -895,6 +920,224 @@ class MainTest(unittest.TestCase):
         self.assertEqual((code, result["status"]), (1, "error"))
         self.assertIn("Push main first", str(result["error"]))
         self.open_page.assert_not_called()
+
+    def test_page_and_dialog_open_under_the_lock(self) -> None:
+        lock = self.root / "handoff.lock"
+        seen: list[tuple[str, bool]] = []
+        owners: list[str] = []
+
+        def open_page(_url: str) -> None:
+            seen.append(("page", lock.is_dir()))
+
+        def run() -> tuple[str, str]:
+            seen.append(("dialog", lock.is_dir()))
+            owners.append((lock / "owner.txt").read_text(encoding="utf-8"))
+            return "done", "ok"
+
+        self.open_page.side_effect = open_page
+        self.dialog.return_value.run.side_effect = run
+        code, _ = self.run_main(
+            "open",
+            "--agent",
+            "bot",
+            "--url",
+            "https://github.com/o",
+            "--title",
+            "Do it",
+            "--step",
+            "Click it.",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [("page", True), ("dialog", True)])
+        self.assertTrue(owners[0].startswith("bot Do it "))
+        self.assertFalse(lock.exists())
+
+    def test_an_open_dialog_blocks_the_next_one(self) -> None:
+        lock = self.root / "handoff.lock"
+        lock.mkdir()
+        (lock / "owner.txt").write_text("other Publish 1.2 now\n", encoding="utf-8")
+        (lock / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        self.patch("LOCK_POLL_SECONDS", 0.01)
+        code, result = self.run_main(
+            "open",
+            "--timeout",
+            "0.0005",
+            "--url",
+            "https://github.com/o",
+            "--title",
+            "Do it",
+            "--step",
+            "Click it.",
+        )
+        self.assertEqual((code, result["status"]), (4, "timeout"))
+        self.assertIn("owner.txt", str(result["error"]))
+        self.open_page.assert_not_called()
+        self.dialog.assert_not_called()
+        self.assertTrue((lock / "owner.txt").is_file())
+
+    def test_the_lock_is_released_when_the_dialog_fails(self) -> None:
+        self.dialog.return_value.run.side_effect = RuntimeError("Tk failed")
+        with self.assertRaises(RuntimeError):
+            self.open_url("https://github.com/o")
+        self.assertFalse((self.root / "handoff.lock").exists())
+
+
+def dead_pid() -> int:
+    """Return the id of a process that has ended."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+class LockTest(unittest.TestCase):
+    """handoff_lock lets one dialog at a time through. Agents can also make the folder by hand."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        self.lock = Path(folder.name) / "handoff.lock"
+        for name, value in [("lock_dir", lambda: self.lock), ("LOCK_POLL_SECONDS", 0.01)]:
+            patcher = mock.patch.object(handoff, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def hold(self, pid: int | None, age_minutes: float = 0) -> None:
+        """Make the folder as another agent leaves it. It has no pid file if pid is None."""
+        self.lock.mkdir()
+        owner = self.lock / "owner.txt"
+        owner.write_text("other Publish 1.2 2026-10-05T01:55:49-07:00\n", encoding="utf-8")
+        if pid is not None:
+            (self.lock / "pid").write_text(str(pid), encoding="utf-8")
+        old = time.time() - age_minutes * 60
+        os.utime(owner, (old, old))
+
+    def assert_waits(self) -> None:
+        """Assert that a new dialog gives up, and the other agent keeps the folder."""
+        with (
+            self.assertRaises(handoff.LockTimeoutError),
+            handoff.handoff_lock("Publish 1.2", "bot", 0.0005),
+        ):
+            pass
+        self.assertIn("other", (self.lock / "owner.txt").read_text(encoding="utf-8"))
+
+    def assert_takes_over(self) -> None:
+        """Assert that a new dialog takes the folder, and leaves none behind."""
+        with handoff.handoff_lock("Publish 1.2", "bot", 0.05):
+            self.assertIn("bot", (self.lock / "owner.txt").read_text(encoding="utf-8"))
+        self.assertFalse(self.lock.exists())
+
+    def test_holds_the_folder_and_names_the_owner(self) -> None:
+        with handoff.handoff_lock("Publish   1.2", "bot", 0.05):
+            owner = (self.lock / "owner.txt").read_text(encoding="utf-8")
+            pid = (self.lock / "pid").read_text(encoding="utf-8")
+        *words, when = owner.split()
+        self.assertEqual(words, ["bot", "Publish", "1.2"])
+        datetime.fromisoformat(when)
+        self.assertEqual(int(pid), os.getpid())
+        self.assertFalse(self.lock.exists())
+
+    def test_releases_the_folder_when_the_block_fails(self) -> None:
+        with self.assertRaises(KeyError), handoff.handoff_lock("Publish 1.2", "bot", 0.05):
+            raise KeyError
+        self.assertFalse(self.lock.exists())
+
+    def test_release_waits_for_a_reader_to_let_go(self) -> None:
+        # On Windows, an agent that has pid open for a moment blocks the delete.
+        with handoff.handoff_lock("Publish 1.2", "bot", 0.05):
+            reader = (self.lock / "pid").open(encoding="utf-8")
+            self.addCleanup(reader.close)
+            threading.Timer(0.2, reader.close).start()
+        self.assertFalse(self.lock.exists())
+
+    def test_release_keeps_the_folder_of_the_next_agent(self) -> None:
+        delete = shutil.rmtree
+
+        def delete_then_let_the_next_agent_in(path: Path) -> None:
+            delete(path)
+            path.mkdir()
+            (path / "next.txt").write_text("the next agent", encoding="utf-8")
+
+        with mock.patch.object(shutil, "rmtree", delete_then_let_the_next_agent_in):
+            with handoff.handoff_lock("Publish 1.2", "bot", 0.05):
+                pass
+            self.assertTrue((self.lock / "next.txt").exists())
+
+    def test_waits_while_a_running_agent_holds_the_folder(self) -> None:
+        # The first holder is a script, the second an agent that made the folder by hand.
+        for pid in [os.getpid(), None]:
+            with self.subTest(pid=pid):
+                self.hold(pid)
+                self.assert_waits()
+                shutil.rmtree(self.lock)
+
+    def test_takes_over_the_folder_of_a_dead_process(self) -> None:
+        for pid in [dead_pid(), 99999999]:
+            with self.subTest(pid=pid):
+                self.hold(pid)
+                self.assert_takes_over()
+
+    def test_takes_over_an_old_folder(self) -> None:
+        self.hold(None, handoff.STALE_MINUTES - 1)
+        self.assert_waits()
+        shutil.rmtree(self.lock)
+        # An old folder is free even when its process still runs.
+        for pid in [os.getpid(), None]:
+            with self.subTest(pid=pid):
+                self.hold(pid, handoff.STALE_MINUTES + 1)
+                self.assert_takes_over()
+
+    def test_is_pid_alive(self) -> None:
+        self.assertTrue(handoff.is_pid_alive(os.getpid()))
+        for pid in [0, -1, 99999999, dead_pid()]:
+            with self.subTest(pid=pid):
+                self.assertFalse(handoff.is_pid_alive(pid))
+
+    def test_a_folder_that_cannot_be_made_is_an_error_not_a_timeout(self) -> None:
+        blocker = self.lock.parent / "blocker"
+        blocker.write_text("a file, not a folder", encoding="utf-8")
+        self.lock = blocker / "handoff.lock"
+        with self.assertRaises(HandoffError) as caught, handoff.handoff_lock("Do it", "bot", 0.05):
+            pass
+        self.assertNotIsInstance(caught.exception, handoff.LockTimeoutError)
+
+
+# Each worker waits for the lock, holds it for 0.2 seconds, and logs when.
+WORKER = """
+import sys, time
+from pathlib import Path
+import handoff
+
+handoff.lock_dir = lambda: Path(sys.argv[1])
+handoff.LOCK_POLL_SECONDS = 0.02
+with handoff.handoff_lock("Publish", sys.argv[3], 1):
+    start = time.time()
+    time.sleep(0.2)
+    with open(sys.argv[2], "a", encoding="utf-8") as log:
+        log.write(f"{sys.argv[3]} {start} {time.time()}\\n")
+"""
+
+
+class LockProcessTest(unittest.TestCase):
+    """Three processes ask for the lock together. Their dialogs must not overlap."""
+
+    def test_processes_take_turns(self) -> None:
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        lock, log = Path(folder.name) / "handoff.lock", Path(folder.name) / "log.txt"
+        env = {**os.environ, "PYTHONPATH": str(Path(handoff.__file__).parent)}
+        workers = [
+            subprocess.Popen([sys.executable, "-c", WORKER, str(lock), str(log), f"w{n}"], env=env)
+            for n in range(3)
+        ]
+        for worker in workers:
+            self.addCleanup(worker.kill)
+            self.assertEqual(worker.wait(timeout=60), 0)
+        rows = [line.split() for line in log.read_text(encoding="utf-8").splitlines()]
+        turns = sorted((float(start), float(end)) for _name, start, end in rows)
+        self.assertEqual(len(turns), 3)
+        for (_, end), (start, _) in pairwise(turns):
+            self.assertLessEqual(end, start + 0.01)
+        self.assertFalse(lock.exists())
 
 
 if __name__ == "__main__":

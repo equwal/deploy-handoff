@@ -34,8 +34,9 @@ import time
 import tomllib
 import urllib.request
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -61,6 +62,10 @@ DEBUG_PORT = 9333
 BROWSER_PROFILE = USER_CONFIG.with_name("browser")
 # The time in seconds that a new browser gets to open DEBUG_PORT.
 BROWSER_START_SECONDS = 30
+# A lock folder with no sign of life for this many minutes belongs to nobody.
+STALE_MINUTES = 40
+# The time in seconds between two tries to take the lock folder.
+LOCK_POLL_SECONDS = 1.0
 # The browser listens on 127.0.0.1. A proxy must not get these requests.
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # GitHub refuses very long request lines. This limit keeps a margin.
@@ -101,6 +106,10 @@ GITHUB_REMOTE_RE = re.compile(
 
 class HandoffError(Exception):
     """The script cannot start the handoff. The message tells the caller why."""
+
+
+class LockTimeoutError(HandoffError):
+    """Another dialog stayed open for the whole wait."""
 
 
 @dataclass(frozen=True)
@@ -183,6 +192,17 @@ def brave_profile() -> str | None:
     if not isinstance(name, str) or not name.strip():
         raise HandoffError(f"{USER_CONFIG}: brave_profile must be the name of a Brave profile.")
     return name.strip()
+
+
+def lock_dir() -> Path:
+    """Return the lock folder: lock_dir in the user file, or else a folder beside the file."""
+    if USER_CONFIG.is_file():
+        name = read_config(USER_CONFIG).get("lock_dir")
+        if name is not None:
+            if not isinstance(name, str) or not name.strip():
+                raise HandoffError(f"{USER_CONFIG}: lock_dir must be the path of a folder.")
+            return Path(name.strip())
+    return USER_CONFIG.with_name("handoff.lock")
 
 
 def brave_data_dir() -> Path:
@@ -453,6 +473,93 @@ def pr_request(args: argparse.Namespace) -> Request:
     return Request(f"Create pull request: {args.title}", url, PR_STEPS, pr=(repo, head_ref))
 
 
+def is_pid_alive(pid: int) -> bool:
+    """Return True if a process with this id runs."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        # On Windows, os.kill(pid, 0) ends the process.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: the process is not ours
+        code = ctypes.c_ulong()
+        try:
+            got_code = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return bool(got_code) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # The process runs, but it is not ours.
+    return True
+
+
+def lock_is_stale(lock: Path) -> bool:
+    """Return True if the holder of the lock folder is gone: its process died, or it is old."""
+    owner = lock / "owner.txt"
+    try:
+        age = time.time() - (owner if owner.exists() else lock).stat().st_mtime
+        if age > STALE_MINUTES * 60:
+            return True
+        return not is_pid_alive(int((lock / "pid").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        # The folder is gone, or the holder has not written pid yet, or an agent took the
+        # lock by hand and writes no pid. Then only the age counts.
+        return False
+
+
+@contextlib.contextmanager
+def handoff_lock(title: str, agent: str, wait_minutes: float) -> Iterator[None]:
+    """Hold the lock folder while the caller shows a dialog. Only one dialog is open.
+
+    mkdir is atomic: the agent that makes the folder holds the lock. owner.txt tells who
+    holds it. pid lets the next agent see that the holder died.
+    """
+    lock = lock_dir()
+    deadline = time.monotonic() + wait_minutes * 60
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                lock.mkdir()
+                break
+            except FileExistsError:
+                # ponytail: two waiters can take over the same stale folder at once.
+                # Rename the folder to a name of its own before the delete, if that happens.
+                if lock_is_stale(lock):
+                    shutil.rmtree(lock, ignore_errors=True)
+            if time.monotonic() >= deadline:
+                raise LockTimeoutError(
+                    f"Another dialog stayed open for {wait_minutes:g} minutes. "
+                    f"owner.txt in {lock} names its agent."
+                )
+            time.sleep(LOCK_POLL_SECONDS)
+    except OSError as exc:
+        raise HandoffError(f"Cannot use the lock folder {lock}: {exc}") from exc
+    try:
+        who = " ".join(f"{agent} {title}".split())
+        when = datetime.now().astimezone().isoformat(timespec="seconds")
+        (lock / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        (lock / "owner.txt").write_text(f"{who} {when}\n", encoding="utf-8")
+        yield
+    finally:
+        # On Windows, an agent that reads pid at this moment blocks the delete for a moment.
+        # Do not test lock.exists(): after the delete, the next agent may have made it again.
+        for _ in range(20):
+            try:
+                shutil.rmtree(lock)
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.05)
+            else:
+                break
+
+
 class Dialog:
     """A small window on top of the browser. It shows the steps and records the answer."""
 
@@ -587,6 +694,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="MINUTES",
         help="the time to wait for the user (default: 30)",
     )
+    common.add_argument(
+        "--agent",
+        default="agent",
+        help="the name of the calling agent, for owner.txt in the lock folder (default: agent)",
+    )
     parser = argparse.ArgumentParser(
         description="Open a web page and wait while the user does the final step."
     )
@@ -660,15 +772,18 @@ def main(argv: list[str] | None = None) -> int:
                 check_text(args.title, args.step)
                 request = Request(args.title, args.url, tuple(args.step))
             check_url(str(request.url))
-            # With --no-open, the caller drove a browser to the page already.
-            if args.command == "pr" or not args.no_open:
-                open_page(str(request.url))
         url = request.url
-        show = Dialog if HAVE_TK else MenuDialog
-        dialog = show(request, args.timeout, lambda: open_page(url) if url else None)
+        with handoff_lock(request.title, args.agent, args.timeout):
+            # With --no-open, the caller drove a browser to the page already.
+            if url and (args.command == "pr" or not args.no_open):
+                open_page(url)
+            show = Dialog if HAVE_TK else MenuDialog
+            dialog = show(request, args.timeout, lambda: open_page(url) if url else None)
+            status, note = dialog.run()
+    except LockTimeoutError as exc:
+        return report({"status": "timeout", "error": str(exc)})
     except HandoffError as exc:
         return report({"status": "error", "error": str(exc)})
-    status, note = dialog.run()
     result: dict[str, str | None] = {"status": status, "note": note}
     if request.pr is not None and status == "done":
         result["pr_url"] = find_open_pr(*request.pr)

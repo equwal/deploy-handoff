@@ -184,7 +184,7 @@ The script opens the GitHub form with the title and the description filled in. T
 
 ## 4. Wait for the answer
 
-The user can take many minutes. Run the command in the background (in Claude Code: `run_in_background: true`). Tell the user in one sentence that the dialog is open. The default time limit is 30 minutes. `--timeout MINUTES` changes it.
+The user can take many minutes. Run the command in the background (in Claude Code: `run_in_background: true`). Tell the user in one sentence that the dialog is open. The default time limit is 30 minutes. `--timeout MINUTES` changes it. `--agent NAME` gives the name of the calling agent for the lock.
 
 The script prints one JSON object:
 
@@ -192,7 +192,7 @@ The script prints one JSON object:
 |---|---|---|
 | `done` | 0 | The user did the steps. |
 | `not_done` | 3 | The user did not do the steps. `note` can give the reason. |
-| `timeout` | 4 | The user did not answer in time. |
+| `timeout` | 4 | The user did not answer in time, or another dialog held the lock for the whole wait. |
 | `error` | 1 | The script did not show the dialog. `error` gives the reason. |
 
 Exit code 2 means bad arguments. Then the script writes the usage to stderr.
@@ -212,7 +212,7 @@ A request can have more than one task, for example a web deploy, a store release
 
 1. Stop the blocked task, and each task that needs its result.
 2. If the blocked step has a web page, give it to the user with `handoff.py`. Run the command in the background.
-3. Continue the other tasks while the dialog is open. Each dialog runs in its own process, so more than one dialog can be open at the same time.
+3. Continue the other tasks while the dialog is open. The script shows one dialog at a time: if a dialog is open already, the new command waits for the lock in the background.
 4. After a `done` answer, check the result. Then continue the blocked task.
 5. Put each question for the user at the end, after the other tasks are done or blocked. A question ends your turn and stops the other tasks.
 
