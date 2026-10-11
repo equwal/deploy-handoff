@@ -620,11 +620,16 @@ class Dialog:
             buttons, text="Not done", command=lambda: self.finish("not_done")
         )
         self.not_done_button.grid(row=0, column=1)
-        self.timer = self.root.after(round(timeout_minutes * 60_000), self.finish, "timeout")
+        self.timer: str | None = self.root.after(
+            round(timeout_minutes * 60_000), self.finish, "timeout"
+        )
 
     def finish(self, status: str) -> None:
-        """Record the answer and close the window."""
+        """Record the first answer and close the window. Ignore later answers."""
+        if self.timer is None:
+            return
         self.root.after_cancel(self.timer)
+        self.timer = None
         self.status = status
         self.note_text = self.note.get().strip()
         self.root.destroy()

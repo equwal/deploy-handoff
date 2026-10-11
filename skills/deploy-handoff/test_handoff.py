@@ -597,6 +597,18 @@ class DialogTest(unittest.TestCase):
     def test_timeout(self) -> None:
         self.assertEqual(self.make_dialog(timeout_minutes=0.001).run(), ("timeout", ""))
 
+    def test_a_second_answer_is_ignored(self) -> None:
+        # A double click, or a click as the timer fires, called finish twice and crashed
+        # with TclError: invalid command name ".!frame.!entry".
+        dialog = self.make_dialog()
+
+        def answer_twice() -> None:
+            dialog.finish("done")
+            dialog.finish("timeout")
+
+        dialog.root.after(50, answer_twice)
+        self.assertEqual(dialog.run(), ("done", ""))
+
     def test_shows_the_steps_under_a_heading(self) -> None:
         # The smoke test on 2026-09-21 showed this request. The user could not see what to do.
         request = Request(
